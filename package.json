@@ -1,0 +1,34 @@
+{
+  "name": "jupiter-scanner-bot",
+  "version": "1.0.0",
+  "description": "Scanner de nouveaux tokens Jupiter avec notifications Discord - toutes les 15 minutes",
+  "main": "discord_scanner.js",
+  "scripts": {
+    "start": "node discord_scanner.js --continuous 15",
+    "test": "node discord_scanner.js --test",
+    "single": "node discord_scanner.js"
+  },
+  "dependencies": {
+    "discord.js": "^14.14.1",
+    "dotenv": "^16.3.1",
+    "node-fetch": "^3.3.2"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mathieudottir/jupiter-scanner-bot.git"
+  },
+  "keywords": [
+    "discord",
+    "bot",
+    "jupiter",
+    "solana",
+    "crypto",
+    "trading",
+    "scanner"
+  ],
+  "author": "mathieudottir",
+  "license": "MIT"
+}
