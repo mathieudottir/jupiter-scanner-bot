@@ -1,18 +1,22 @@
 {
   "name": "jupiter-scanner-bot",
   "version": "1.0.0",
-  "description": "Scanner de nouveaux tokens Jupiter avec notifications Discord - toutes les 15 minutes",
-  "main": "discord_scanner.js",
+  "description": "Scanner et Auto-trader Jupiter avec notifications Discord - Solana",
+  "main": "simple_auto_trader.js",
   "scripts": {
-    "start": "node discord_scanner.js --continuous 15",
-    "test": "node discord_scanner.js --test",
-    "single": "node discord_scanner.js"
+    "start": "node simple_auto_trader.js",
+    "scanner": "node discord_scanner.js --continuous 15",
+    "scanner-single": "node discord_scanner.js",
+    "test": "node simple_auto_trader.js --test",
+    "test-scanner": "node discord_scanner.js --test"
   },
   "dependencies": {
     "discord.js": "^14.14.1",
     "dotenv": "^16.3.1",
     "node-fetch": "^3.3.2",
-     "express": "^4.18.2"
+    "express": "^4.18.2",
+    "@solana/web3.js": "^1.87.6",
+    "bs58": "^5.0.0"
   },
   "engines": {
     "node": ">=18.0.0"
@@ -28,8 +32,14 @@
     "solana",
     "crypto",
     "trading",
-    "scanner"
+    "scanner",
+    "auto-trader",
+    "defi"
   ],
   "author": "mathieudottir",
-  "license": "MIT"
+  "license": "MIT",
+  "homepage": "https://github.com/mathieudottir/jupiter-scanner-bot#readme",
+  "bugs": {
+    "url": "https://github.com/mathieudottir/jupiter-scanner-bot/issues"
+  }
 }
