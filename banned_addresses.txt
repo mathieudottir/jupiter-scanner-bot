@@ -1,9 +1,4 @@
-# Adresses bannies - une par ligne
-# Lignes commençant par # = commentaires
-
-# Scams connus
-BfvBXetGhUafks5V22vRBudaTYUqx9BkD4kx7z6bbonk
 fESbUKjuMY6jzDH9VP8cy4p3pu2q5W2rK2XghVfNseP
-
-# Tokens problématiques
-# Ajoute tes adresses ici
+BfvBXetGhUafks5V22vRBudaTYUqx9BkD4kx7z6bbonk
+6AJcP7wuLwmRYLBNbi825wgguaPsWzPBEHcHndpRpump
+GHAvJTJ8cNo6mtTUMapsDDycP7R9rq8oNT1JFpDJczSA

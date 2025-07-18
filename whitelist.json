@@ -1,0 +1,209 @@
+{
+  "metadata": {
+    "lastUpdate": "2025-07-18",
+    "version": "2.0",
+    "totalTokens": 15,
+    "description": "TOP 15 meilleurs tokens Solana - Sélection basée sur utilité, adoption et fiabilité",
+    "criteria": [
+      "Pas de stablecoins (USDC, USDT exclus)",
+      "Pas de tokens bridge",
+      "Memes et politiques OK si adresses vérifiées",
+      "Priorisé par: utilité, volume, adoption, innovation"
+    ],
+    "excluded": ["USDC", "USDT", "bridge_tokens"],
+    "selection_basis": "utility_adoption_volume_innovation"
+  },
+  "tokens": {
+    "SOL": {
+      "address": "So11111111111111111111111111111111111111112",
+      "name": "Solana",
+      "category": "native",
+      "verified": true,
+      "rank": 1,
+      "selection_reason": "Token natif - Base de tout l'écosystème"
+    },
+    "JUP": {
+      "address": "JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN",
+      "name": "Jupiter",
+      "category": "defi",
+      "verified": true,
+      "rank": 2,
+      "selection_reason": "Plus gros DEX aggregator - Volume énorme"
+    },
+    "RAY": {
+      "address": "4k3Dyjzvzp8eMZWUXbBCjEvwSkkk59S5iCNLY3QrkX6R",
+      "name": "Raydium",
+      "category": "defi",
+      "verified": true,
+      "rank": 3,
+      "selection_reason": "AMM principal et premier DEX de Solana"
+    },
+    "PYTH": {
+      "address": "HZ1JovNiVvGrGNiiYvEozEVgZ58xaU3RKwX8eACQBCt3",
+      "name": "Pyth Network",
+      "category": "oracle",
+      "verified": true,
+      "rank": 4,
+      "selection_reason": "Oracle de prix leader - Infrastructure critique"
+    },
+    "JTO": {
+      "address": "jtojtomepa8beP8AuQc6eXt5FriJwfFMwQx2v2f9mCL",
+      "name": "Jito",
+      "category": "infrastructure",
+      "verified": true,
+      "rank": 5,
+      "selection_reason": "Liquid staking leader - MEV et validation"
+    },
+    "BONK": {
+      "address": "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263",
+      "name": "Bonk",
+      "category": "meme",
+      "verified": true,
+      "rank": 6,
+      "selection_reason": "Premier memecoin de Solana - Adoption massive"
+    },
+    "ORCA": {
+      "address": "orcaEKTdK7LKz57vaAYr9QeNsVEPfiu6QeMU1kektZE",
+      "name": "Orca",
+      "category": "defi",
+      "verified": true,
+      "rank": 7,
+      "selection_reason": "DEX user-friendly - Interface excellente"
+    },
+    "WIF": {
+      "address": "EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm",
+      "name": "dogwifhat",
+      "category": "meme",
+      "verified": true,
+      "rank": 8,
+      "selection_reason": "Memecoin viral - Communauté forte"
+    },
+    "DRIFT": {
+      "address": "DriFtupJYLTosbwoN8koMbEYSx54aFAVLddWsbksjwg7",
+      "name": "Drift Protocol",
+      "category": "defi",
+      "verified": true,
+      "rank": 9,
+      "selection_reason": "Trading décentralisé avancé - Perps et spots"
+    },
+    "RENDER": {
+      "address": "rndrizKT3MK1iimdxRdWabcF7Zg7AR5T4nud4EkHBof",
+      "name": "Render Token",
+      "category": "gpu",
+      "verified": true,
+      "rank": 10,
+      "selection_reason": "GPU rendering décentralisé - Use case réel"
+    },
+    "HNT": {
+      "address": "hntyVP6YFm1Hg25TN9WGLqM12b8TQmcknKrdu1oxWux",
+      "name": "Helium",
+      "category": "iot",
+      "verified": true,
+      "rank": 11,
+      "selection_reason": "Réseau IoT décentralisé - Infrastructure physique"
+    },
+    "GRASS": {
+      "address": "Grass7B4RdKfBCjTKgSqnXkqjwiGvQyFbuSCUJr3XXjs",
+      "name": "Grass",
+      "category": "ai",
+      "verified": true,
+      "rank": 12,
+      "selection_reason": "AI et data scraping - Innovation"
+    },
+    "POPCAT": {
+      "address": "7GCihgDB8fe6KNjn2MYtkzZcRjQy3t9GHdC8uHYmW2hr",
+      "name": "Popcat",
+      "category": "meme",
+      "verified": true,
+      "rank": 14,
+      "selection_reason": "Memecoin établi - Bonne liquidité"
+    },
+    "PENGU": {
+    "address": "2zMMhcVQEXDtdE6vsFS7S7D5oUodfJHE8vd1gnBouauv",
+    "name": "Pudgy Penguins",
+    "category": "meme",
+    "verified": true,
+    "rank": null,
+    "selection_reason": "Projet connu de NFT sur Solana"
+  },
+  "PUMP": {
+    "address": "pumpCmXqMfrsAkQ5r49WcJnRayYRqmXz6ae8H7H9Dfn",
+    "name": "Pump.fun",
+    "category": "meme",
+    "verified": true,
+    "rank": null,
+    "selection_reason": "Plateforme de lancement de memecoins"
+  },
+  "FARTCOIN": {
+    "address": "9BB6NFEcjBCtnNLFko2FqVQBq8HHM13kCyYcdQbgpump",
+    "name": "Fartcoin",
+    "category": "meme",
+    "verified": true,
+    "rank": null,
+    "selection_reason": "Memecoin viral sur Solana"
+  },
+  "WIF": {
+    "address": "EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm",
+    "name": "dogwifhat",
+    "category": "meme",
+    "verified": true,
+    "rank": null,
+    "selection_reason": "Un des leaders des memecoins Solana"
+  },
+    "AGI": {
+    "address": "8bUbe1ujsM1G3JEbBWVVCXa2widmuPdKUB2rGKMYFw7R",
+    "name": "Delysium",
+    "category": "meme",
+    "verified": true,
+    "rank": null,
+    "selection_reason": "Un des leaders des memecoins Solana"
+  },
+      "Trencher": {
+    "address": "8ncucXv6U6epZKHPbgaEBcEK399TpHGKCquSt4RnmX4f",
+    "name": "TRENCHER",
+    "category": "meme",
+    "verified": true,
+    "rank": null,
+    "selection_reason": "Un des leaders des memecoins Solana"
+  },
+    "ZBCN": {
+    "address": "ZBCNpuD7YMXzTHB2fhGkGi78MNsHGLRXUhRewNRm9RU",
+    "name": "Zebec Network",
+    "category": "meme",
+    "verified": true,
+    "rank": null,
+    "selection_reason": "Un des leaders des memecoins Solana"
+  },
+  "MOG": {
+    "address": "26VfKb7jjtdEdvfovoBijScoZmJbWWasFZkgfUD5w7cy",
+    "name": "Mog Coin",
+    "category": "meme",
+    "verified": true,
+    "rank": null,
+    "selection_reason": "Memecoin populaire - style humoristique"
+  },
+    "AI16Z": {
+      "address": "HeLp6NuQkmYB4pYWo2zYs22mESHXPQYzXbB8n4V98jwC",
+      "name": "ai16z",
+      "category": "ai",
+      "verified": true,
+      "rank": 15,
+      "selection_reason": "DAO AI agents - Innovation dans l'AI"
+    }
+  },
+  "excluded_tokens": {
+    "USDC": "Stablecoin exclu selon critères",
+    "USDT": "Stablecoin exclu selon critères",
+    "VIRTUAL": "Adresse incorrecte dans fichier source - devrait être 3iQL8BFS2vE7mww4ehAqQHAsbmRNCrPxizWAT2Zfyr9y",
+    "PONKE": "Adresse à vérifier - possiblement incorrecte",
+    "GOAT": "Adresse pump.fun - risque élevé"
+    
+  },
+  "notes": {
+    "defi_dominance": "6 tokens DeFi/Infrastructure (SOL, JUP, RAY, PYTH, JTO, ORCA, DRIFT)",
+    "meme_representation": "3 memecoins établis (BONK, WIF, POPCAT)",
+    "innovation_sectors": "AI/GPU (RENDER, GRASS, IO, AI16Z), IoT (HNT)",
+    "risk_distribution": "70% low-risk (infrastructure/DeFi), 30% medium-risk (memes/AI)",
+    "volume_focus": "Tous ont volume significatif et liquidité déprouvée"
+  }
+}
