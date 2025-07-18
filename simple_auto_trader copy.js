@@ -4,50 +4,6 @@ const { Client, GatewayIntentBits, EmbedBuilder } = require('discord.js');
 const { Connection, Keypair, PublicKey, VersionedTransaction } = require('@solana/web3.js');
 const bs58 = require('bs58');
 
-const STABLECOINS = [
-    'usdc', 'usdt', 'busd', 'dai', 'frax', 'lusd', 'susd', 'tusd', 'usdp', 'gusd',
-    'husd', 'usdn', 'ust', 'ousd', 'usdd', 'usdk', 'ustc', 'tribe', 'val', 'eur',
-    'usd-coin', 'tether', 'binance-usd', 'multi-collateral-dai', 'stasis-eurs',
-    'jpyc', 'ceur', 'cusd', 'xsgd', 'usdx', 'reserve', 'dola', 'liquity-usd'
-];
-
-function isStablecoin(token) {
-    const symbol = token.symbol.toLowerCase();
-    const name = token.name.toLowerCase();
-    const id = token.id.toLowerCase();
-    
-    if (STABLECOINS.includes(symbol) || STABLECOINS.includes(id)) {
-        return true;
-    }
-    
-    const stablePatterns = [
-        /usd/i, /eur/i, /jpy/i, /stable/i, /pegged/i, /tether/i, /coin.*usd/i
-    ];
-    
-    return stablePatterns.some(pattern => 
-        pattern.test(symbol) || pattern.test(name) || pattern.test(id)
-    );
-}
-
-function calculateMomentumScore(token) {
-    const change1h = token.price_change_percentage_1h_in_currency || 0;
-    const change24h = token.price_change_percentage_24h || 0;
-    const change7d = token.price_change_percentage_7d_in_currency || 0;
-    const volume = token.total_volume || 0;
-    const marketCap = token.market_cap || 0;
-    
-    const momentumScore = 
-        change1h * 3 +           
-        change24h * 2 +          
-        change7d * 0.5;          
-    
-    const consistencyBonus = (change1h > 0 && change24h > 0 && change7d > 0) ? 20 : 0;
-    const volumeRatio = marketCap > 0 ? (volume / marketCap) * 100 : 0;
-    const volumeScore = Math.min(volumeRatio * 10, 50);
-    
-    return momentumScore + consistencyBonus + volumeScore;
-}
-
 class SimpleAutoTrader {
     constructor() {
         // Configuration Discord
@@ -87,17 +43,6 @@ this.bannedAddresses = new Set([
     'BfvBXetGhUafks5V22vRBudaTYUqx9BkD4kx7z6bbonk', // USDC (exemple)
     // Ajoute tes adresses ici
 ]);
-
-   this.stagnationExit = {
-        enabled: true,
-        maxHoldTime: 4 * 60 * 60 * 1000,    // 4 heures maximum
-        stagnantTime: 2 * 60 * 60 * 1000,   // 2h si vraiment stagnant
-        stagnantThreshold: 5,                // ±5% = stagnant
-        lossExitTime: 90 * 60 * 1000,       // 1h30 si perte significative
-        lossThreshold: -10                   // -10%
-    };
-    
-    console.log(`⏰ Sortie stagnation: 4h max | 2h si ±5% | 1h30 si -10%`);
 
 // Ou charger depuis un fichier
 this.loadBannedAddresses();
@@ -142,30 +87,17 @@ this.loadBannedAddresses();
         this.useTrailingStop = true;
         this.trailingStopPercent = 15; // -15% depuis le plus haut
         
-            this.maxConcurrentPositions = 2; // Maximum 2 positions simultanées
-    this.coinGeckoCache = null; // Cache des tokens CoinGecko
-    this.coinGeckoCacheTime = 0; // Timestamp du cache
-    this.coinGeckoCacheTimeout = 5 * 60 * 1000; // 5 minutes
         // Positions actives
         this.positions = new Map(); // tokenAddress -> position data
         this.postedTokens = new Map(); // Anti-doublons
-        this.retradeCooldown = {
-        normal: 24 * 60 * 60 * 1000,        // 24h normal
-        afterLoss: 48 * 60 * 60 * 1000,     // 48h si perte
-        afterProfit: 12 * 60 * 60 * 1000,   // 12h si profit
-        opportunityThreshold: 50,             // +50% momentum pour override
-        minCooldownOverride: 6 * 60 * 60 * 1000  // Min 6h avant override
-    };
+        this.tokenCooldown = 24 * 60 * 60 * 1000; // 24h
         
         // Critères de filtrage (même que le scanner)
         this.maxAgeHours = 1;
         this.minLiquidity = 30000;
         this.minVolume = 10000;
         this.minChange = 20;
-        this.tradedTokens = new Map(); // tokenAddress -> tradeHistory
-    
-        console.log(`🔄 Re-trade: 24h normal, 12h si profit, 48h si perte`);
-        console.log(`⚡ Override possible si +50% momentum après 6h min`);
+        
         console.log(`💼 Wallet: ${this.wallet.publicKey.toString()}`);
         console.log(`💰 Buy amount: ${this.buyAmount} SOL`);
         console.log(`🎯 Ventes échelonnées: ${this.sellLevels.length} niveaux`);
@@ -222,144 +154,181 @@ this.loadBannedAddresses();
     // Scanner les nouveaux tokens (même logique que le scanner)
 // Scanner amélioré avec tokens récents ET performants
 async scanNewTokens() {
-    console.log('🔍 Scan CoinGecko - Top Momentum Solana...');
+    console.log('🔍 Recherche de nouveaux tokens...');
     
     try {
-        // Vérifier le cache d'abord
-        const now = Date.now();
-        if (this.coinGeckoCache && 
-            (now - this.coinGeckoCacheTime) < this.coinGeckoCacheTimeout) {
-            console.log('💾 Utilisation cache CoinGecko');
-            return this.coinGeckoCache;
+        const newTokens = [];
+        
+        // 1. TOKENS RÉCENTS (moins d'1h) - logique existante
+        console.log('   📍 Scan tokens récents (<1h)...');
+        const trendingResponse = await fetch('https://api.dexscreener.com/token-profiles/latest/v1');
+        
+        if (trendingResponse.ok) {
+            const trendingData = await trendingResponse.json();
+            
+            for (const tokenProfile of trendingData.slice(0, 10)) {
+                try {
+                    if (tokenProfile.tokenAddress) {
+                        const pairsResponse = await fetch(
+                            `https://api.dexscreener.com/latest/dex/tokens/${tokenProfile.tokenAddress}`
+                        );
+                        
+                        if (pairsResponse.ok) {
+                            const pairsData = await pairsResponse.json();
+                            
+                            if (pairsData.pairs) {
+                                const recentSolanaPairs = pairsData.pairs.filter(pair => {
+                                    if (pair.chainId !== 'solana') return false;
+                                    
+                                    const age = this.calculateAge(pair.pairCreatedAt);
+                                    const liquidity = parseFloat(pair.liquidity?.usd || 0);
+                                    const volume24h = parseFloat(pair.volume?.h24 || 0);
+                                    const change24h = parseFloat(pair.priceChange?.h24 || 0);
+                                    
+                                    return age <= this.maxAgeHours && 
+                                           liquidity >= this.minLiquidity &&
+                                           volume24h >= this.minVolume &&
+                                           change24h >= this.minChange;
+                                });
+                                
+                                newTokens.push(...recentSolanaPairs);
+                            }
+                        }
+                        
+                        await new Promise(resolve => setTimeout(resolve, 300));
+                    }
+                } catch (error) {
+                    console.log(`⚠️ Erreur token récent ${tokenProfile.tokenAddress}: ${error.message}`);
+                }
+            }
         }
         
-        console.log('📡 Récupération données CoinGecko...');
-        const response = await fetch(
-            'https://api.coingecko.com/api/v3/coins/markets?' +
-            'vs_currency=usd&' +
-            'category=solana-ecosystem&' +
-            'order=volume_desc&' +
-            'per_page=100&' +
-            'page=1&' +
-            'sparkline=false&' +
-            'price_change_percentage=1h,24h,7d'
-        );
-        
-        if (!response.ok) {
-            console.log(`❌ Erreur CoinGecko API: ${response.status}`);
-            return [];
+        // 2. TOKENS PLUS ANCIENS PERFORMANTS (1h à 24h)
+        console.log('   🚀 Scan tokens performants (1h-24h)...');
+        try {
+            // Récupérer les tokens qui gagnent le plus sur Solana
+            const gainersResponse = await fetch('https://api.dexscreener.com/latest/dex/search?q=solana');
+            
+            if (gainersResponse.ok) {
+                const gainersData = await gainersResponse.json();
+                
+                if (gainersData.pairs) {
+                    const performantPairs = gainersData.pairs
+                        .filter(pair => {
+                            if (pair.chainId !== 'solana') return false;
+                            
+                            const age = this.calculateAge(pair.pairCreatedAt);
+                            const liquidity = parseFloat(pair.liquidity?.usd || 0);
+                            const volume24h = parseFloat(pair.volume?.h24 || 0);
+                            const change24h = parseFloat(pair.priceChange?.h24 || 0);
+                            const change6h = parseFloat(pair.priceChange?.h6 || 0);
+                            const change1h = parseFloat(pair.priceChange?.h1 || 0);
+                            
+                            // Critères pour tokens plus anciens mais performants
+                            const isOlderButGood = age > 24 // Entre 1h et 24h
+                                                 liquidity >= 1000000 && // Plus de liquidité requise
+                                                 volume24h >= 500000 && // Plus de volume requis
+                                                 change24h >= 20 && // Au moins +20% sur 24h
+                                                 change6h >= 10 && // Au moins +10% sur 6h
+                                                 change1h >= 5; // Au moins +5% sur 1h (momentum)
+                            
+                            return isOlderButGood;
+                        })
+                        .sort((a, b) => {
+                            // Trier par performance 6h (momentum récent)
+                            const perfA = parseFloat(a.priceChange?.h6 || 0);
+                            const perfB = parseFloat(b.priceChange?.h6 || 0);
+                            return perfB - perfA;
+                        })
+                        .slice(0, 5); // Max 5 tokens performants
+                    
+                    console.log(`   ✅ Trouvé ${performantPairs.length} tokens performants`);
+                    newTokens.push(...performantPairs);
+                }
+            }
+        } catch (error) {
+            console.log(`⚠️ Erreur scan tokens performants: ${error.message}`);
         }
         
-        const tokens = await response.json();
-        console.log(`📊 ${tokens.length} tokens Solana reçus`);
-        
-        // Filtrer et scorer les tokens
-        const momentumTokens = tokens
-    .filter(token => {
-        const isStable = isStablecoin(token);
-        const hasVolume = token.total_volume && token.total_volume > 200000;
-        const hasPrice = token.current_price > 0;
-        
-        const change1h = token.price_change_percentage_1h_in_currency || 0;
-        const change24h = token.price_change_percentage_24h || 0;
-        
-        // FILTRE ULTRA-STRICT: Momentum récent OBLIGATOIRE
-        const hasStrongRecentMomentum = 
-            change1h > 3 &&        // +3% minimum sur 1h (récent)
-            change24h > 10 &&      // +10% minimum sur 24h (contexte)
-            change1h > 0;          // Double vérification 1h positif
-        
-        // Logging détaillé
-        if (isStable) {
-            console.log(`🚫 Stablecoin: ${token.symbol.toUpperCase()}`);
-        } else if (change1h <= 0) {
-            console.log(`❌ ${token.symbol.toUpperCase()}: 1h négatif (${change1h.toFixed(1)}%)`);
-        } else if (change1h <= 3) {
-            console.log(`⚠️ ${token.symbol.toUpperCase()}: 1h trop faible (+${change1h.toFixed(1)}%)`);
-        } else if (change24h <= 10) {
-            console.log(`⚠️ ${token.symbol.toUpperCase()}: 24h trop faible (+${change24h.toFixed(1)}%)`);
+        // 3. TOKENS TRENDING AVEC FORTE LIQUIDITÉ (backup)
+        console.log('   💎 Scan tokens haute liquidité...');
+        try {
+            // Chercher spécifiquement les tokens avec forte liquidité
+            const highLiqResponse = await fetch('https://api.dexscreener.com/latest/dex/tokens/solana');
+            
+            if (highLiqResponse.ok) {
+                const highLiqData = await highLiqResponse.json();
+                
+                if (highLiqData.pairs) {
+                    const highLiqPairs = highLiqData.pairs
+                        .filter(pair => {
+                            const liquidity = parseFloat(pair.liquidity?.usd || 0);
+                            const volume24h = parseFloat(pair.volume?.h24 || 0);
+                            const change24h = parseFloat(pair.priceChange?.h24 || 0);
+                            const age = this.calculateAge(pair.pairCreatedAt);
+                            
+                            // Tokens avec très forte liquidité, peu importe l'âge
+                            return liquidity >= 100000 && // 100k+ liquidité
+                                   volume24h >= 100000 && // 100k+ volume
+                                   change24h >= 20 && // Au moins +20%
+                                   age && age <= 48; // Max 48h
+                        })
+                        .sort((a, b) => {
+                            // Trier par ratio volume/liquidité (activité)
+                            const ratioA = parseFloat(a.volume?.h24 || 0) / parseFloat(a.liquidity?.usd || 1);
+                            const ratioB = parseFloat(b.volume?.h24 || 0) / parseFloat(b.liquidity?.usd || 1);
+                            return ratioB - ratioA;
+                        })
+                        .slice(0, 3); // Max 3 tokens haute liquidité
+                    
+                    console.log(`   ✅ Trouvé ${highLiqPairs.length} tokens haute liquidité`);
+                    newTokens.push(...highLiqPairs);
+                }
+            }
+        } catch (error) {
+            console.log(`⚠️ Erreur scan haute liquidité: ${error.message}`);
         }
         
-        return !isStable && hasVolume && hasPrice && hasStrongRecentMomentum;
-    })
-            .map(token => ({
-                ...token,
-                momentumScore: calculateMomentumScore(token),
-                // Convertir au format attendu par le trader
-                baseToken: {
-                    address: token.id, // On va chercher l'adresse Solana après
-                    symbol: token.symbol.toUpperCase(),
-                    name: token.name
-                },
-                priceUsd: token.current_price.toString(),
-                volume: { h24: token.total_volume },
-                priceChange: { 
-                    h1: token.price_change_percentage_1h_in_currency,
-                    h24: token.price_change_percentage_24h 
-                },
-                scanReason: this.getCoinGeckoScanReason(token)
-            }))
+        // Dédupliquer et finaliser
+        const uniqueTokens = new Map();
+        for (const token of newTokens) {
+            const address = token.baseToken?.address;
+            if (address && !uniqueTokens.has(address)) {
+                // Ajouter des infos de scoring
+                token.scanReason = this.getScanReason(token);
+                uniqueTokens.set(address, token);
+            }
+        }
+        
+        const finalTokens = Array.from(uniqueTokens.values())
             .sort((a, b) => {
-    // 1. PRIORITÉ: Momentum 1h (plus c'est récent, plus c'est important)
-    const momentum1hA = a.price_change_percentage_1h_in_currency || 0;
-    const momentum1hB = b.price_change_percentage_1h_in_currency || 0;
-    
-    if (momentum1hA !== momentum1hB) {
-        return momentum1hB - momentum1hA; // Plus fort momentum 1h en premier
-    }
-    
-    // 2. En cas d'égalité, utiliser le score momentum global
-    return b.momentumScore - a.momentumScore;
-})
-            .slice(0, 10); // Top 10 pour commencer
+                // Prioriser par performance 6h puis liquidité
+                const perfA = parseFloat(a.priceChange?.h6 || 0);
+                const perfB = parseFloat(b.priceChange?.h6 || 0);
+                if (perfA !== perfB) return perfB - perfA;
+                
+                const liqA = parseFloat(a.liquidity?.usd || 0);
+                const liqB = parseFloat(b.liquidity?.usd || 0);
+                return liqB - liqA;
+            })
+            .slice(0, 5); // Max 5 tokens au total par scan
         
-        console.log(`🎯 ${momentumTokens.length} tokens momentum trouvés:`);
-        momentumTokens.forEach((token, i) => {
-            const change1h = token.priceChange.h1;
-            const change24h = token.priceChange.h24;
-            console.log(`   ${i+1}. ${token.baseToken.symbol} - Score: ${token.momentumScore.toFixed(1)} - 1h: ${change1h?.toFixed(1) || 'N/A'}% - 24h: ${change24h?.toFixed(1) || 'N/A'}%`);
+        console.log(`✅ ${finalTokens.length} tokens sélectionnés au total`);
+        
+        // Log des tokens sélectionnés avec leurs raisons
+        finalTokens.forEach((token, i) => {
+            const change6h = parseFloat(token.priceChange?.h6 || 0);
+            const liquidity = parseFloat(token.liquidity?.usd || 0);
+            const age = this.calculateAge(token.pairCreatedAt);
+            console.log(`   ${i+1}. ${token.baseToken?.symbol} - ${token.scanReason} (+${change6h.toFixed(1)}% 6h, $${(liquidity/1000).toFixed(0)}k liq, ${age?.toFixed(1)}h)`);
         });
         
-        // Maintenant récupérer les adresses Solana réelles via DexScreener
-        const tokensWithAddresses = await this.getCoinGeckoSolanaAddresses(momentumTokens);
-        
-        // Mettre en cache
-        this.coinGeckoCache = tokensWithAddresses;
-        this.coinGeckoCacheTime = now;
-        
-        return tokensWithAddresses;
+        return finalTokens;
         
     } catch (error) {
-        console.error('❌ Erreur scan CoinGecko:', error.message);
+        console.error('❌ Erreur scan nouveaux tokens:', error.message);
         return [];
     }
-}
-checkStagnationExit(position) {
-    if (!this.stagnationExit.enabled) return null;
-    
-    const now = Date.now();
-    const holdTime = now - position.buyTime;
-    const currentPrice = position.lastKnownPrice || position.buyPrice;
-    const changePercent = ((currentPrice / position.buyPrice) - 1) * 100;
-    
-    // 1. TEMPS MAXIMUM (4h peu importe quoi)
-    if (holdTime > this.stagnationExit.maxHoldTime) {
-        return `⏰ Temps maximum (4h)`;
-    }
-    
-    // 2. PERTE SIGNIFICATIVE TROP LONGUE (1h30 + perte > 10%)
-    if (holdTime > this.stagnationExit.lossExitTime && 
-        changePercent < this.stagnationExit.lossThreshold) {
-        return `💸 Perte prolongée (${changePercent.toFixed(1)}% depuis 1h30+)`;
-    }
-    
-    // 3. VRAIE STAGNATION (2h + mouvement < 5%)
-    if (holdTime > this.stagnationExit.stagnantTime && 
-        Math.abs(changePercent) < this.stagnationExit.stagnantThreshold) {
-        return `😴 Stagnation totale (${changePercent.toFixed(1)}% en 2h+)`;
-    }
-    
-    return null; // Pas de sortie
 }
 
 // Fonction helper pour identifier la raison du scan
@@ -390,58 +359,26 @@ getScanReason(token) {
     }
 
     // Vérifier si un token a déjà été traité
-   isTokenAlreadyProcessed(tokenAddress, currentMomentumScore = 0) {
-    if (!this.tradedTokens.has(tokenAddress)) {
-        return false; // Jamais tradé
-    }
-    
-    const tradeHistory = this.tradedTokens.get(tokenAddress);
-    const lastTrade = tradeHistory.lastTradeTime;
-    const lastResult = tradeHistory.lastResult; // 'profit', 'loss', 'breakeven'
-    const timeSinceLastTrade = Date.now() - lastTrade;
-    
-    // Déterminer le cooldown selon le résultat précédent
-    let cooldownTime;
-    if (lastResult === 'profit') {
-        cooldownTime = this.retradeCooldown.afterProfit; // 12h
-    } else if (lastResult === 'loss') {
-        cooldownTime = this.retradeCooldown.afterLoss; // 48h
-    } else {
-        cooldownTime = this.retradeCooldown.normal; // 24h
-    }
-    
-    // Si cooldown pas encore écoulé
-    if (timeSinceLastTrade < cooldownTime) {
-        
-        // MAIS vérifier si on peut faire un override pour opportunité exceptionnelle
-        const canOverride = this.canOverrideCooldown(tradeHistory, currentMomentumScore, timeSinceLastTrade);
-        
-        if (canOverride) {
-            console.log(`⚡ Override cooldown ${tokenAddress.slice(0, 8)}... - Opportunité exceptionnelle (+${currentMomentumScore.toFixed(1)}%)`);
-            return false; // Autoriser le trade
+    isTokenAlreadyProcessed(tokenAddress) {
+        if (!this.postedTokens.has(tokenAddress)) {
+            return false;
         }
         
-        const remainingHours = ((cooldownTime - timeSinceLastTrade) / (1000 * 60 * 60)).toFixed(1);
-        console.log(`⏳ ${tokenAddress.slice(0, 8)}... en cooldown (${remainingHours}h restantes - ${lastResult})`);
-        return true; // Bloquer
+        const lastProcessed = this.postedTokens.get(tokenAddress);
+        const timeSinceProcessed = Date.now() - lastProcessed;
+        
+        if (timeSinceProcessed > this.tokenCooldown) {
+            this.postedTokens.delete(tokenAddress);
+            return false;
+        }
+        
+        return true;
     }
-    
-    // Cooldown écoulé, nettoyer l'historique
-    this.tradedTokens.delete(tokenAddress);
-    return false;
-}
 
-// Remplacer markTokenAsProcessed() par:
-markTokenAsProcessed(tokenAddress, result = 'unknown') {
-    this.tradedTokens.set(tokenAddress, {
-        lastTradeTime: Date.now(),
-        lastResult: result,
-        tradeCount: (this.tradedTokens.get(tokenAddress)?.tradeCount || 0) + 1,
-        lastMomentumScore: 0 // Sera mis à jour
-    });
-    
-    console.log(`📝 Token marqué: ${tokenAddress.slice(0, 8)}... (${result})`);
-}
+    // Marquer un token comme traité
+    markTokenAsProcessed(tokenAddress) {
+        this.postedTokens.set(tokenAddress, Date.now());
+    }
 
     // Rate limiting pour RPC calls
     async waitForRateLimit() {
@@ -466,29 +403,7 @@ markTokenAsProcessed(tokenAddress, result = 'unknown') {
             return this.connection; // Retour au principal
         }
     }
-        canOverrideCooldown(tradeHistory, currentMomentumScore, timeSinceLastTrade) {
-    // Conditions pour override:
-    // 1. Au moins 6h depuis le dernier trade
-    // 2. Momentum exceptionnel (+50%+)
-    // 3. Pas si le dernier trade était une grosse perte récente
-    
-    // 1. Temps minimum
-    if (timeSinceLastTrade < this.retradeCooldown.minCooldownOverride) {
-        return false; // Pas assez de temps écoulé
-    }
-    
-    // 2. Momentum exceptionnel
-    if (currentMomentumScore < this.retradeCooldown.opportunityThreshold) {
-        return false; // Pas assez exceptionnel
-    }
-    
-    // 3. Protection contre les grosses pertes récentes
-    if (tradeHistory.lastResult === 'loss' && timeSinceLastTrade < 24 * 60 * 60 * 1000) {
-        return false; // Pas d'override dans les 24h après une perte
-    }
-    
-    return true; // Override autorisé !
-}
+
     // Vérifier le solde avec cache et rate limiting
     async checkWalletBalance(tokenMint, requiredAmount, useCache = true) {
         try {
@@ -569,32 +484,7 @@ markTokenAsProcessed(tokenAddress, result = 'unknown') {
             return false;
         }
     }
-            async notifyPositionCheckSimple() {
-    if (this.positions.size === 0) return;
-    
-    try {
-        const channel = await this.client.channels.fetch(this.channelId);
-        if (!channel) return;
-        
-        let message = `📊 **POSITIONS CHECK** (${this.positions.size})\n`;
-        
-        for (const [, position] of this.positions.entries()) {
-            const currentPrice = position.lastKnownPrice || position.buyPrice;
-            const changePercent = ((currentPrice / position.buyPrice) - 1) * 100;
-            const holdTimeMin = ((Date.now() - position.buyTime) / (1000 * 60)).toFixed(0);
-            
-            const emoji = changePercent > 10 ? '🚀' : changePercent > 0 ? '📈' : changePercent > -10 ? '⚠️' : '🔴';
-            const partialInfo = position.partialSells > 0 ? ` (${position.partialSells}x)` : '';
-            
-            message += `${emoji} **${position.symbol}**: ${changePercent > 0 ? '+' : ''}${changePercent.toFixed(1)}% • ${holdTimeMin}min${partialInfo}\n`;
-        }
-        
-        await channel.send(message);
-        
-    } catch (error) {
-        console.error('❌ Erreur notification simple:', error.message);
-    }
-}
+
     // Tester la compatibilité Jupiter et obtenir un quote avec vérifications
     async getJupiterQuote(inputMint, outputMint, amount) {
         try {
@@ -823,81 +713,59 @@ if (confirmed) {
 
     // Vérifier les positions avec ventes échelonnées (toutes les minutes)
     async checkPositions() {
-    if (this.positions.size === 0) return;
-    
-    console.log(`📊 Vérification de ${this.positions.size} positions...`);
-    
-    for (const [tokenAddress, position] of this.positions.entries()) {
-        try {
-            // Obtenir le prix actuel via DexScreener
-            const response = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${tokenAddress}`);
-            
-            if (response.ok) {
-                const data = await response.json();
-                const pair = data.pairs?.find(p => p.chainId === 'solana');
+        if (this.positions.size === 0) return;
+        
+        console.log(`📊 Vérification de ${this.positions.size} positions...`);
+        
+        for (const [tokenAddress, position] of this.positions.entries()) {
+            try {
+                // Obtenir le prix actuel via DexScreener
+                const response = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${tokenAddress}`);
                 
-                if (pair) {
-                    const currentPrice = parseFloat(pair.priceUsd || 0);
-                    const changePercent = ((currentPrice / position.buyPrice) - 1) * 100;
+                if (response.ok) {
+                    const data = await response.json();
+                    const pair = data.pairs?.find(p => p.chainId === 'solana');
                     
-                    // Mettre à jour le plus haut prix atteint + prix pour stagnation
-                    if (!position.highestPrice || currentPrice > position.highestPrice) {
-                        position.highestPrice = currentPrice;
-                        position.highestPercent = changePercent;
-                    }
-                    
-                    // 🆕 AJOUTER: Mettre à jour le prix pour les calculs de stagnation
-                    position.lastKnownPrice = currentPrice;
-                    
-                    const holdTimeMin = ((Date.now() - position.buyTime) / (1000 * 60)).toFixed(0);
-                    console.log(`   📈 ${position.symbol}: ${changePercent > 0 ? '+' : ''}${changePercent.toFixed(1)}% (${holdTimeMin}min, Max: +${position.highestPercent?.toFixed(1) || 0}%)`);
-                    
-                    // Vérifier stop-loss classique
-                    if (changePercent <= -this.stopLossPercent) {
-                        await this.sellEntirePosition(position, currentPrice, `Stop-Loss (-${this.stopLossPercent}%)`);
-                        continue;
-                    }
-                    
-                    // Vérifier trailing stop
-                    if (this.useTrailingStop && position.highestPrice) {
-                        const drawdownFromHigh = ((position.highestPrice - currentPrice) / position.highestPrice) * 100;
-                        if (drawdownFromHigh >= this.trailingStopPercent) {
-                            await this.sellEntirePosition(position, currentPrice, `Trailing Stop (-${drawdownFromHigh.toFixed(1)}% depuis le max)`);
+                    if (pair) {
+                        const currentPrice = parseFloat(pair.priceUsd || 0);
+                        const changePercent = ((currentPrice / position.buyPrice) - 1) * 100;
+                        
+                        // Mettre à jour le plus haut prix atteint
+                        if (!position.highestPrice || currentPrice > position.highestPrice) {
+                            position.highestPrice = currentPrice;
+                            position.highestPercent = changePercent;
+                        }
+                        
+                        console.log(`   📈 ${position.symbol}: ${changePercent > 0 ? '+' : ''}${changePercent.toFixed(1)}% (Max: +${position.highestPercent?.toFixed(1) || 0}%)`);
+                        
+                        // Vérifier stop-loss classique
+                        if (changePercent <= -this.stopLossPercent) {
+                            await this.sellEntirePosition(position, currentPrice, `Stop-Loss (-${this.stopLossPercent}%)`);
                             continue;
                         }
-                    }
-                    
-                    // Vérifier les niveaux de vente échelonnée
-                    await this.checkStagedSells(position, changePercent, currentPrice);
-                    
-                    // 🆕 Vérifier sortie stagnation (APRÈS ventes partielles)
-                    const stagnationReason = this.checkStagnationExit(position);
-                    if (stagnationReason) {
-                        console.log(`🚪 Sortie stagnation: ${position.symbol} - ${stagnationReason}`);
-                        await this.sellEntirePosition(position, currentPrice, stagnationReason);
-                        continue;
+                        
+                        // Vérifier trailing stop
+                        if (this.useTrailingStop && position.highestPrice) {
+                            const drawdownFromHigh = ((position.highestPrice - currentPrice) / position.highestPrice) * 100;
+                            if (drawdownFromHigh >= this.trailingStopPercent) {
+                                await this.sellEntirePosition(position, currentPrice, `Trailing Stop (-${drawdownFromHigh.toFixed(1)}% depuis le max)`);
+                                continue;
+                            }
+                        }
+                        
+                        // Vérifier les niveaux de vente échelonnée
+                        await this.checkStagedSells(position, changePercent, currentPrice);
                     }
                 }
+                
+                // Rate limiting
+                await new Promise(resolve => setTimeout(resolve, 1000));
+                
+            } catch (error) {
+                console.log(`⚠️ Erreur vérification ${position.symbol}: ${error.message}`);
             }
-            
-            // Rate limiting
-            await new Promise(resolve => setTimeout(resolve, 1000));
-            
-        } catch (error) {
-            console.log(`⚠️ Erreur vérification ${position.symbol}: ${error.message}`);
         }
     }
-    
-    // 🆕 NOTIFICATION DISCORD - APRÈS LA BOUCLE (une seule fois)
-    if (!this.lastDiscordCheck) this.lastDiscordCheck = 0;
-    this.checkCount = (this.checkCount || 0) + 1;
-    
-    if (this.checkCount % 3 === 0) { // Toutes les 3 vérifications (6 minutes)
-        console.log(`📢 Envoi update Discord positions...`);
-        await this.notifyPositionCheckSimple();
-        this.lastDiscordCheck = Date.now();
-    }
-}
 
     // Vérifier et exécuter les ventes échelonnées
     async checkStagedSells(position, changePercent, currentPrice) {
@@ -1000,186 +868,77 @@ if (confirmed) {
             return false;
         }
     }
-            showActiveCooldowns() {
-    if (this.tradedTokens.size === 0) {
-        console.log(`📊 Aucun token en cooldown`);
-        return;
-    }
-    
-    console.log(`📊 Tokens en cooldown:`);
-    
-    for (const [tokenAddress, history] of this.tradedTokens.entries()) {
-        const timeSinceLastTrade = Date.now() - history.lastTradeTime;
-        
-        let cooldownTime;
-        if (history.lastResult === 'profit') {
-            cooldownTime = this.retradeCooldown.afterProfit;
-        } else if (history.lastResult === 'loss') {
-            cooldownTime = this.retradeCooldown.afterLoss;
-        } else {
-            cooldownTime = this.retradeCooldown.normal;
-        }
-        
-        const remainingTime = cooldownTime - timeSinceLastTrade;
-        
-        if (remainingTime > 0) {
-            const remainingHours = (remainingTime / (1000 * 60 * 60)).toFixed(1);
-            const result = history.lastResult;
-            const profit = history.finalProfit ? `${history.finalProfit > 0 ? '+' : ''}${history.finalProfit.toFixed(1)}%` : 'N/A';
-            
-            console.log(`   🕐 ${tokenAddress.slice(0, 8)}... → ${remainingHours}h (${result}: ${profit})`);
-        }
-    }
-}
-    // Vendre toute la position restante avec vérifications renforcées
 
-        // Vendre toute la position restante avec vérifications renforcées + tracking re-trade
-async sellEntirePosition(position, currentPrice, reason) {
-    try {
-        console.log(`💸 Vente totale: ${position.symbol} (${reason})`);
-        
-        const tokenMint = position.tokenAddress;
-        const solMint = 'So11111111111111111111111111111111111111112';
-        
-        // Obtenir le solde réel du wallet pour ce token
-        await this.waitForRateLimit();
-        const tokenAccounts = await this.connection.getParsedTokenAccountsByOwner(
-            this.wallet.publicKey,
-            { mint: new PublicKey(tokenMint) }
-        );
-        
-        if (tokenAccounts.value.length === 0) {
-            console.log(`❌ Aucun compte token trouvé pour vente totale`);
+    // Vendre toute la position restante avec vérifications renforcées
+    async sellEntirePosition(position, currentPrice, reason) {
+        try {
+            console.log(`💸 Vente totale: ${position.symbol} (${reason})`);
             
-            // Marquer comme échec mais supprimer la position
-            this.markTokenAsProcessed(position.tokenAddress, 'loss');
-            this.positions.delete(position.tokenAddress);
-            return false;
-        }
-        
-        const realBalance = parseFloat(tokenAccounts.value[0].account.data.parsed.info.tokenAmount.amount);
-        const amountToSell = Math.floor(realBalance * 0.99); // Garder 1% pour éviter les erreurs d'arrondi
-        
-        console.log(`   🪙 Solde réel: ${realBalance.toLocaleString()}`);
-        console.log(`   🪙 Quantité à vendre: ${amountToSell.toLocaleString()}`);
-        
-        if (amountToSell <= 0) {
-            console.log(`❌ Pas de tokens à vendre (solde: ${realBalance})`);
+            const tokenMint = position.tokenAddress;
+            const solMint = 'So11111111111111111111111111111111111111112';
             
-            // Position vide, la supprimer et marquer selon le contexte
-            const tradeResult = position.totalSolReceived > 0 ? 'profit' : 'breakeven';
-            this.markTokenAsProcessed(position.tokenAddress, tradeResult);
-            this.positions.delete(position.tokenAddress);
-            return false;
-        }
-        
-        // Obtenir quote de vente pour tout le restant
-        const sellQuote = await this.getJupiterQuote(tokenMint, solMint, amountToSell);
-        
-        if (!sellQuote) {
-            console.log(`❌ Impossible d'obtenir quote de vente totale pour ${position.symbol}`);
+            // Obtenir le solde réel du wallet pour ce token
+            const tokenAccounts = await this.connection.getParsedTokenAccountsByOwner(
+                this.wallet.publicKey,
+                { mint: new PublicKey(tokenMint) }
+            );
             
-            // Marquer comme échec technique mais garder la position pour retry
-            console.log(`⚠️ Quote échoué, position gardée pour retry ultérieur`);
-            return false;
-        }
-        
-        const expectedSol = parseFloat(sellQuote.outAmount) / 1e9;
-        console.log(`   💰 Quote reçu: ${amountToSell.toLocaleString()} tokens → ${expectedSol.toFixed(4)} SOL`);
-        
-        // Exécuter la vente
-        const txid = await this.executeSwap(sellQuote);
-        
-        if (txid) {
-            const solReceived = parseFloat(sellQuote.outAmount) / 1e9;
-            const totalSolReceived = position.totalSolReceived + solReceived;
-            const totalProfit = totalSolReceived - position.solSpent;
-            const totalProfitPercent = ((totalSolReceived / position.solSpent) - 1) * 100;
-            const holdTimeMin = ((Date.now() - position.buyTime) / (1000 * 60)).toFixed(0);
-            
-            console.log(`✅ Vente totale réussie: ${position.symbol}`);
-            console.log(`   💰 SOL final reçu: ${solReceived.toFixed(4)} SOL`);
-            console.log(`   💰 SOL total reçu: ${totalSolReceived.toFixed(4)} SOL`);
-            console.log(`   📊 Profit total: ${totalProfit > 0 ? '+' : ''}${totalProfit.toFixed(4)} SOL (${totalProfitPercent > 0 ? '+' : ''}${totalProfitPercent.toFixed(1)}%)`);
-            console.log(`   ⏱️ Durée position: ${holdTimeMin} minutes`);
-            console.log(`   🎯 Ventes partielles: ${position.partialSells}`);
-            console.log(`   🔗 TX finale: ${txid}`);
-            
-            // 🆕 DÉTERMINER LE RÉSULTAT POUR LE RE-TRADE SYSTEM
-            let tradeResult;
-            if (totalProfitPercent > 10) {
-                tradeResult = 'profit';
-                console.log(`🎉 Trade profitable: ${totalProfitPercent.toFixed(1)}% → Cooldown 12h`);
-            } else if (totalProfitPercent < -5) {
-                tradeResult = 'loss';
-                console.log(`😞 Trade en perte: ${totalProfitPercent.toFixed(1)}% → Cooldown 48h`);
-            } else {
-                tradeResult = 'breakeven';
-                console.log(`⚖️ Trade breakeven: ${totalProfitPercent.toFixed(1)}% → Cooldown 24h`);
+            if (tokenAccounts.value.length === 0) {
+                console.log(`❌ Aucun compte token trouvé pour vente totale`);
+                return false;
             }
             
-            // Mettre à jour l'historique de re-trade avec le résultat final
-            this.markTokenAsProcessed(position.tokenAddress, tradeResult);
+            const realBalance = parseFloat(tokenAccounts.value[0].account.data.parsed.info.tokenAmount.amount);
+            const amountToSell = Math.floor(realBalance * 0.99); // Garder 1% pour éviter les erreurs d'arrondi
             
-            // Stocker infos supplémentaires pour l'historique
-            if (this.tradedTokens.has(position.tokenAddress)) {
-                const history = this.tradedTokens.get(position.tokenAddress);
-                history.finalProfit = totalProfitPercent;
-                history.holdTimeMinutes = parseInt(holdTimeMin);
-                history.partialSells = position.partialSells;
-                history.exitReason = reason;
-                history.totalSolReceived = totalSolReceived;
+            console.log(`   🪙 Solde réel: ${realBalance.toLocaleString()}`);
+            console.log(`   🪙 Quantité à vendre: ${amountToSell.toLocaleString()}`);
+            
+            if (amountToSell <= 0) {
+                console.log(`❌ Pas de tokens à vendre`);
+                return false;
             }
             
-            // Notification Discord pour vente finale
-            await this.notifyFinalSell(position, totalSolReceived, totalProfit, totalProfitPercent, reason, txid);
+            // Obtenir quote de vente pour tout le restant
+            const sellQuote = await this.getJupiterQuote(tokenMint, solMint, amountToSell);
             
-            // Supprimer la position
-            this.positions.delete(position.tokenAddress);
+            if (!sellQuote) {
+                console.log(`❌ Impossible d'obtenir quote de vente totale pour ${position.symbol}`);
+                return false;
+            }
             
-            // Invalider le cache de solde pour forcer refresh
-            const cacheKey = `${solMint}_${this.wallet.publicKey.toString()}`;
-            this.balanceCache.delete(cacheKey);
+            console.log(`   💰 Quote reçu: ${amountToSell} tokens → ${(parseFloat(sellQuote.outAmount) / 1e9).toFixed(4)} SOL`);
             
-            console.log(`🗑️ Position ${position.symbol} fermée et supprimée`);
+            // Exécuter la vente
+            const txid = await this.executeSwap(sellQuote);
             
-            return true;
-            
-        } else {
-            console.log(`❌ Échec de la vente totale pour ${position.symbol}`);
-            
-            // En cas d'échec de vente, ne pas supprimer la position
-            // Mais marquer dans l'historique pour éviter re-trade immédiat
-            console.log(`⚠️ Vente échouée, position gardée pour retry`);
-            
-            // Marquer comme échec technique avec cooldown modéré
-            this.markTokenAsProcessed(position.tokenAddress, 'loss');
+            if (txid) {
+                const solReceived = parseFloat(sellQuote.outAmount) / 1e9;
+                const totalSolReceived = position.totalSolReceived + solReceived;
+                const totalProfit = totalSolReceived - position.solSpent;
+                const totalProfitPercent = ((totalSolReceived / position.solSpent) - 1) * 100;
+                
+                console.log(`✅ Vente totale réussie: ${position.symbol}`);
+                console.log(`   💰 SOL total reçu: ${totalSolReceived.toFixed(4)}`);
+                console.log(`   📊 Profit total: ${totalProfit > 0 ? '+' : ''}${totalProfit.toFixed(4)} SOL (${totalProfitPercent > 0 ? '+' : ''}${totalProfitPercent.toFixed(1)}%)`);
+                console.log(`   🔗 TX: ${txid}`);
+                
+                // Notification Discord pour vente finale
+                await this.notifyFinalSell(position, totalSolReceived, totalProfit, totalProfitPercent, reason, txid);
+                
+                // Supprimer la position
+                this.positions.delete(position.tokenAddress);
+                
+                return true;
+            }
             
             return false;
+        } catch (error) {
+            console.error(`❌ Erreur vente totale ${position.symbol}: ${error.message}`);
+            return false;
         }
-        
-    } catch (error) {
-        console.error(`❌ Erreur vente totale ${position.symbol}: ${error.message}`);
-        
-        // Log détaillé pour debug
-        console.error(`🔍 Détails erreur:`, {
-            tokenAddress: position.tokenAddress,
-            symbol: position.symbol,
-            reason: reason,
-            currentPrice: currentPrice,
-            error: error.stack
-        });
-        
-        // En cas d'erreur grave, marquer comme perte pour éviter re-trade rapide
-        this.markTokenAsProcessed(position.tokenAddress, 'loss');
-        
-        // Ne pas supprimer la position en cas d'erreur technique
-        // Elle sera retry au prochain cycle
-        console.log(`⚠️ Erreur technique, position gardée pour retry`);
-        
-        return false;
     }
-}
+
     // Notification Discord d'achat
     async notifyBuy(position, tokenData) {
         try {
@@ -1239,69 +998,7 @@ async sellEntirePosition(position, currentPrice, reason) {
             console.error('❌ Erreur notification achat:', error.message);
         }
     }
-        async getCoinGeckoSolanaAddresses(coinGeckoTokens) {
-    console.log('🔍 Recherche adresses Solana via DexScreener...');
-    
-    const tokensWithAddresses = [];
-    
-    for (const token of coinGeckoTokens.slice(0, 5)) { // Limiter à 5 pour éviter rate limit
-        try {
-            console.log(`   🔎 Recherche ${token.baseToken.symbol}...`);
-            
-            // Rechercher sur DexScreener par symbole
-            const searchResponse = await fetch(
-                `https://api.dexscreener.com/latest/dex/search?q=${token.baseToken.symbol}`
-            );
-            
-            if (searchResponse.ok) {
-                const searchData = await searchResponse.json();
-                
-                // Trouver une paire Solana correspondante
-                const solanaPair = searchData.pairs?.find(pair => 
-                    pair.chainId === 'solana' && 
-                    pair.baseToken?.symbol?.toLowerCase() === token.baseToken.symbol.toLowerCase() &&
-                    parseFloat(pair.liquidity?.usd || 0) > 50000 // Min 50k liquidité
-                );
-                
-                if (solanaPair) {
-                    // Ajouter l'adresse Solana trouvée
-                    token.baseToken.address = solanaPair.baseToken.address;
-                    token.liquidity = solanaPair.liquidity;
-                    token.pairAddress = solanaPair.pairAddress;
-                    token.url = solanaPair.url;
-                    
-                    tokensWithAddresses.push(token);
-                    console.log(`   ✅ ${token.baseToken.symbol}: ${solanaPair.baseToken.address.slice(0, 8)}...`);
-                } else {
-                    console.log(`   ❌ ${token.baseToken.symbol}: Pas d'adresse Solana trouvée`);
-                }
-            }
-            
-            // Rate limiting
-            await new Promise(resolve => setTimeout(resolve, 1000));
-            
-        } catch (error) {
-            console.log(`   ⚠️ Erreur ${token.baseToken.symbol}: ${error.message}`);
-        }
-    }
-    
-    console.log(`✅ ${tokensWithAddresses.length} tokens avec adresses Solana`);
-    return tokensWithAddresses;
-}
 
-// Ajouter cette méthode helper:
-getCoinGeckoScanReason(token) {
-    const change1h = token.price_change_percentage_1h_in_currency || 0;
-    const change24h = token.price_change_percentage_24h || 0;
-    const volume = token.total_volume || 0;
-    
-    if (change1h > 10 && change24h > 20) return "🔥 Hot Momentum";
-    if (change1h > 0 && change24h > 0) return "📈 Consistent Growth";
-    if (change1h > 15) return "⚡ Pump Detected";
-    if (change24h > 25) return "🚀 Breakout";
-    if (volume > 1000000) return "💎 High Volume";
-    return "📊 CoinGecko Trending";
-}
     // Notification Discord pour vente partielle
     async notifyPartialSell(position, solReceived, profit, profitPercent, level, txid) {
         try {
@@ -1423,63 +1120,59 @@ getCoinGeckoScanReason(token) {
 
     // Traiter les nouveaux tokens
     async processNewTokens(tokens) {
-    console.log(`🔄 Traitement de ${tokens.length} tokens CoinGecko...`);
-    
-    // Vérifier qu'on n'a pas déjà le maximum de positions
-    if (this.positions.size >= this.maxConcurrentPositions) {
-        console.log(`⏸️ Maximum de positions atteint (${this.maxConcurrentPositions})`);
-        return 0;
-    }
-    
-    let boughtCount = 0;
-    const maxToBuy = this.maxConcurrentPositions - this.positions.size;
-    
-    for (const tokenData of tokens.slice(0, maxToBuy * 2)) { // Essayer 2x plus que nécessaire
-        try {
-            const tokenAddress = tokenData.baseToken?.address;
-            if (!tokenAddress) continue;
-            
-            if (this.isAddressBanned(tokenAddress)) {
-                console.log(`🚫 Token banni ignoré: ${tokenData.baseToken.symbol}`);
+        console.log(`🔄 Traitement de ${tokens.length} nouveaux tokens...`);
+        
+        let boughtCount = 0;
+        
+        for (const tokenData of tokens) {
+            try {
+                const tokenAddress = tokenData.baseToken?.address;
+                if (!tokenAddress) continue;
+                if (this.isAddressBanned(tokenAddress)) {
+                 console.log(`🚫 Token banni ignoré: ${tokenData.baseToken.symbol} (${tokenAddress.slice(0, 8)}...)`);
                 continue;
-            }
-            
-            if (this.isTokenAlreadyProcessed(tokenAddress, tokenData.momentumScore || 0)) {
-                console.log(`⏭️ Token déjà traité: ${tokenData.baseToken.symbol}`);
-                continue;
-            }
-            
-            if (this.positions.has(tokenAddress)) {
-                console.log(`⏭️ Position déjà ouverte: ${tokenData.baseToken.symbol}`);
-                continue;
-            }
-            
-            console.log(`🎯 Tentative achat: ${tokenData.baseToken.symbol} (${tokenData.scanReason})`);
-            const bought = await this.buyToken(tokenAddress, tokenData);
-            
-            if (bought) {
-                this.markTokenAsProcessed(tokenAddress);
-                boughtCount++;
-                console.log(`✅ Achat réussi ${boughtCount}/${maxToBuy}: ${tokenData.baseToken.symbol}`);
+                    }
                 
-                if (boughtCount >= maxToBuy) {
-                    console.log('✅ Quota d\'achats atteint pour ce cycle');
-                    break;
+                // Éviter les doublons
+                if (this.isTokenAlreadyProcessed(tokenAddress)) {
+                    console.log(`⏭️ Token déjà traité: ${tokenData.baseToken.symbol}`);
+                    continue;
                 }
-            } else {
-                console.log(`❌ Échec achat: ${tokenData.baseToken.symbol}`);
+                
+                // Éviter d'acheter si on a déjà une position
+                if (this.positions.has(tokenAddress)) {
+                    console.log(`⏭️ Position déjà ouverte: ${tokenData.baseToken.symbol}`);
+                    continue;
+                }
+                
+                // Tentative d'achat
+                const bought = await this.buyToken(tokenAddress, tokenData);
+                
+                if (bought) {
+                    this.markTokenAsProcessed(tokenAddress);
+                    boughtCount++;
+                    
+                    // Limiter les achats par scan
+                    if (boughtCount >= 2) {
+                        console.log('⚠️ Limite d\'achats par scan atteinte');
+                        break;
+                    }
+                } else {
+                    console.log(`❌ Échec achat: ${tokenData.baseToken.symbol}`);
+                }
+                
+                // Rate limiting
+                await new Promise(resolve => setTimeout(resolve, 3000));
+                
+            } catch (error) {
+                console.error(`❌ Erreur traitement token: ${error.message}`);
             }
-            
-            await new Promise(resolve => setTimeout(resolve, 3000));
-            
-        } catch (error) {
-            console.error(`❌ Erreur traitement token: ${error.message}`);
         }
+        
+        console.log(`✅ ${boughtCount} tokens achetés`);
+        return boughtCount;
     }
-    
-    console.log(`✅ ${boughtCount} nouveaux achats CoinGecko`);
-    return boughtCount;
-}
+
     // Fonction principale de scan et trading
     async runTradingCycle() {
         console.log('\n🤖 CYCLE DE TRADING AUTO');
@@ -1561,72 +1254,81 @@ saveBannedAddresses() {
     }
 }
     // Lancer le trading automatique avec double timing
-async startAutoTrading() {
-    console.log(`🚀 Démarrage Auto-Trading CoinGecko avec ventes échelonnées`);
-    console.log(`💼 Wallet: ${this.wallet.publicKey.toString()}`);
-    console.log(`💰 Montant par achat: ${this.buyAmount} SOL`);
-    console.log(`🎯 Max positions simultanées: ${this.maxConcurrentPositions}`);
-    console.log(`🔍 Source: CoinGecko Solana Momentum`);
-    console.log(`⏰ Check positions: Toutes les 2 minutes`);
-    console.log(`📊 Scan CoinGecko: Toutes les 10 minutes`);
-    console.log('💡 Appuyez sur Ctrl+C pour arrêter\n');
-    console.log(`⏰ Sortie stagnation: 4h max, 2h si stagne, 1h30 si -10%`);
-    let scanCount = 0;
-    
-    // Timer positions (2 minutes)
-    const positionCheckTimer = setInterval(async () => {
-        try {
-            if (this.positions.size > 0) {
-                console.log(`\n⏰ ${new Date().toLocaleTimeString()} - Check ${this.positions.size} positions`);
-                await this.checkPositions();
+    async startAutoTrading() {
+        console.log(`🚀 Démarrage Auto-Trading avec ventes échelonnées`);
+        console.log(`💼 Wallet: ${this.wallet.publicKey.toString()}`);
+        console.log(`💰 Montant par achat: ${this.buyAmount} SOL`);
+        console.log(`🎯 Ventes échelonnées: +20%(50%), +75%(60%), +200%(75%), +500%(90%)`);
+        console.log(`📉 Stop-Loss: -${this.stopLossPercent}%`);
+        console.log(`📈 Trailing Stop: -${this.trailingStopPercent}%`);
+        console.log(`⏰ Check positions: Toutes les minutes`);
+        console.log(`🔍 Scan nouveaux tokens: Toutes les 5 minutes`);
+        console.log('💡 Appuyez sur Ctrl+C pour arrêter\n');
+        
+        let cycleCount = 0;
+        let scanCount = 0;
+        
+        // Timer pour vérifier les positions toutes les 2 minutes (au lieu de 1)
+        const positionCheckTimer = setInterval(async () => {
+            try {
+                if (this.positions.size > 0) {
+                    console.log(`\n⏰ ${new Date().toLocaleTimeString()} - Check positions`);
+                    await this.checkPositions();
+                }
+            } catch (error) {
+                console.error('❌ Erreur check positions:', error.message);
+            }
+        }, 2 * 60 * 1000); // 2 minutes au lieu de 1
+        
+        // Timer pour scanner nouveaux tokens toutes les 10 minutes (au lieu de 5)
+        const scanTimer = setInterval(async () => {
+            try {
+                scanCount++;
+                console.log(`\n⏰ ${new Date().toLocaleTimeString()} - Scan nouveaux tokens #${scanCount}`);
                 
-                // Si une position se ferme et qu'on est sous le max, relancer un scan
-                if (this.positions.size < this.maxConcurrentPositions) {
-                    console.log(`💡 Position libre détectée, scan opportuniste...`);
-                    const tokens = await this.scanNewTokens();
-                    if (tokens.length > 0) {
-                        await this.processNewTokens(tokens);
+                const tokens = await this.scanNewTokens();
+                if (tokens.length > 0) {
+                    await this.processNewTokens(tokens);
+                }
+                
+                // Statistiques
+                console.log(`📊 Positions actives: ${this.positions.size}`);
+                if (this.positions.size > 0) {
+                    for (const [, position] of this.positions) {
+                        const duration = ((Date.now() - position.buyTime) / (1000 * 60)).toFixed(0);
+                        console.log(`   💎 ${position.symbol}: ${duration}min, ${position.partialSells} ventes partielles`);
                     }
                 }
+                
+            } catch (error) {
+                console.error('❌ Erreur scan:', error.message);
             }
-        } catch (error) {
-            console.error('❌ Erreur check positions:', error.message);
-        }
-    }, 2 * 60 * 1000);
-    
-    // Timer scan CoinGecko (10 minutes) 
-    const scanTimer = setInterval(async () => {
+        }, 10 * 60 * 1000); // 10 minutes au lieu de 5
+        
+        // Scan initial immédiat
         try {
-            scanCount++;
-            console.log(`\n⏰ ${new Date().toLocaleTimeString()} - Scan CoinGecko #${scanCount}`);
-            
+            console.log(`\n⏰ ${new Date().toLocaleString()} - Scan initial`);
             const tokens = await this.scanNewTokens();
             if (tokens.length > 0) {
                 await this.processNewTokens(tokens);
             }
-            
-            console.log(`📊 Positions: ${this.positions.size}/${this.maxConcurrentPositions}`);
-            if (scanCount % 3 === 0) { // Toutes les 3 scans (30min)
-    this.showActiveCooldowns();
-}
         } catch (error) {
-            console.error('❌ Erreur scan CoinGecko:', error.message);
+            console.error('❌ Erreur scan initial:', error.message);
         }
-    }, 10 * 60 * 1000);
-    
-    // Scan initial
-    try {
-        console.log(`\n⏰ ${new Date().toLocaleString()} - Scan initial CoinGecko`);
-        const tokens = await this.scanNewTokens();
-        if (tokens.length > 0) {
-            await this.processNewTokens(tokens);
+        
+        // Garder le processus en vie
+        process.on('SIGINT', () => {
+            console.log('\n🛑 Arrêt du trader...');
+            clearInterval(positionCheckTimer);
+            clearInterval(scanTimer);
+            process.exit(0);
+        });
+        
+        // Boucle infinie pour garder le processus actif
+        while (true) {
+            await new Promise(resolve => setTimeout(resolve, 60000));
         }
-    } catch (error) {
-        console.error('❌ Erreur scan initial:', error.message);
     }
-    
-    // ... rest of existing code (SIGINT handler, while loop) ...
-}
 }
 
 // Fonctions d'utilisation
