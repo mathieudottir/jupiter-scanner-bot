@@ -1,28 +1,57 @@
-// debug_scanner.js - Scanner isolé pour comprendre les résultats
+// solana_focused_scanner.js - Scanner 100% Solana avec tokens établis
 require('dotenv').config();
 
-class DebugScanner {
+class SolanaFocusedScanner {
     constructor() {
-        // Configuration identique au trader
-        this.maxAgeHours = 1;
-        this.minLiquidity = 5000;
-        this.minVolume = 10000;
-        this.minChange = 20;
+        // Configuration élargie pour inclure tokens établis
+        this.criteria = {
+            // Nouveaux tokens (< 6h)
+            fresh: {
+                maxAge: 6, // 6h au lieu de 1h
+                minLiquidity: 5000,
+                minVolume: 10000,
+                minChange24h: 20,
+                label: '🆕 Fresh'
+            },
+            
+            // Tokens établis performants (6h - 7 jours)
+            established: {
+                maxAge: 7 * 24, // 7 jours
+                minLiquidity: 50000, // Plus de liquidité requise
+                minVolume: 100000, // Plus de volume requis
+                minChange24h: 15, // Change plus bas OK
+                minChange1h: 3, // Momentum récent requis
+                label: '🏆 Established'
+            },
+            
+            // Tokens momentum (peu importe l'âge)
+            momentum: {
+                maxAge: 30 * 24, // 30 jours max
+                minLiquidity: 100000, // Forte liquidité
+                minVolume: 500000, // Très fort volume
+                minChange1h: 5, // Fort momentum 1h
+                minChange6h: 10, // Fort momentum 6h
+                label: '🚀 Momentum'
+            },
+            
+            // Tokens "Blue Chip" meme (BONK, WIF, etc.)
+            blueChip: {
+                maxAge: 365 * 24, // Peu importe l'âge
+                minLiquidity: 1000000, // 1M+ liquidité
+                minVolume: 1000000, // 1M+ volume
+                minChange24h: 5, // Même petit change OK
+                popularSymbols: ['BONK', 'WIF', 'POPCAT', 'TRUMP', 'PEPE', 'MOODENG', 'GOAT', 'PNUT', 'BOME'],
+                label: '💎 Blue Chip'
+            }
+        };
         
-        // Configuration élargie pour debug
-        this.debugMaxAgeHours = 48; // Plus large pour debug
-        this.debugMinLiquidity = 1000; // Plus bas pour debug
-        this.debugMinVolume = 1000; // Plus bas pour debug
-        this.debugMinChange = 5; // Plus bas pour debug
-        
-        console.log('🔍 DEBUG SCANNER - Configuration:');
-        console.log(`   📅 Âge max: ${this.maxAgeHours}h (debug: ${this.debugMaxAgeHours}h)`);
-        console.log(`   💧 Liquidité min: $${this.minLiquidity} (debug: $${this.debugMinLiquidity})`);
-        console.log(`   📊 Volume min: $${this.minVolume} (debug: $${this.debugMinVolume})`);
-        console.log(`   📈 Change min: ${this.minChange}% (debug: ${this.debugMinChange}%)`);
+        console.log('🎯 SCANNER SOLANA FOCUS - Configuration:');
+        console.log('   🆕 Fresh: <6h, $5k+ liq, $10k+ vol, +20% change');
+        console.log('   🏆 Established: <7j, $50k+ liq, $100k+ vol, +15% change, +3% 1h');
+        console.log('   🚀 Momentum: <30j, $100k+ liq, $500k+ vol, +5% 1h, +10% 6h');
+        console.log('   💎 Blue Chip: Popular tokens, $1M+ liq/vol, +5% change');
     }
 
-    // Calculer l'âge du token
     calculateAge(createdAt) {
         if (!createdAt) return null;
         try {
@@ -32,7 +61,7 @@ class DebugScanner {
         }
     }
 
-    // Analyser un token en détail
+    // Analyser un token selon tous les critères
     analyzeToken(token, source) {
         const age = this.calculateAge(token.pairCreatedAt);
         const liquidity = parseFloat(token.liquidity?.usd || 0);
@@ -40,346 +69,341 @@ class DebugScanner {
         const change24h = parseFloat(token.priceChange?.h24 || 0);
         const change6h = parseFloat(token.priceChange?.h6 || 0);
         const change1h = parseFloat(token.priceChange?.h1 || 0);
+        const symbol = token.baseToken?.symbol || '';
         
         const analysis = {
             source,
-            symbol: token.baseToken?.symbol || 'N/A',
+            symbol,
             name: token.baseToken?.name || 'N/A',
             address: token.baseToken?.address || 'N/A',
             age: age ? age.toFixed(1) : 'N/A',
-            liquidity: liquidity,
-            volume24h: volume24h,
-            change24h: change24h,
-            change6h: change6h,
-            change1h: change1h,
-            chainId: token.chainId,
+            liquidity,
+            volume24h,
+            change24h,
+            change6h,
+            change1h,
             
-            // Tests de validation
-            validChain: token.chainId === 'solana',
-            validAge: age && age <= this.maxAgeHours,
-            validLiquidity: liquidity >= this.minLiquidity,
-            validVolume: volume24h >= this.minVolume,
-            validChange: change24h >= this.minChange,
-            
-            // Tests debug (critères assouplis)
-            debugAge: age && age <= this.debugMaxAgeHours,
-            debugLiquidity: liquidity >= this.debugMinLiquidity,
-            debugVolume: volume24h >= this.debugMinVolume,
-            debugChange: change24h >= this.debugMinChange,
-            
-            // Score final
-            passesOriginal: false,
-            passesDebug: false
+            // Test chaque catégorie
+            categories: []
         };
         
-        // Validation finale
-        analysis.passesOriginal = analysis.validChain && 
-                                analysis.validAge && 
-                                analysis.validLiquidity && 
-                                analysis.validVolume && 
-                                analysis.validChange;
-                                
-        analysis.passesDebug = analysis.validChain && 
-                             analysis.debugAge && 
-                             analysis.debugLiquidity && 
-                             analysis.debugVolume && 
-                             analysis.debugChange;
+        // Test Fresh
+        if (token.chainId === 'solana' && age && age <= this.criteria.fresh.maxAge) {
+            const passes = liquidity >= this.criteria.fresh.minLiquidity &&
+                          volume24h >= this.criteria.fresh.minVolume &&
+                          change24h >= this.criteria.fresh.minChange24h;
+            
+            if (passes) {
+                analysis.categories.push({
+                    type: 'fresh',
+                    label: this.criteria.fresh.label,
+                    score: change24h + (change6h || 0) + (change1h || 0)
+                });
+            }
+        }
+        
+        // Test Established
+        if (token.chainId === 'solana' && age && age > this.criteria.fresh.maxAge && age <= this.criteria.established.maxAge) {
+            const passes = liquidity >= this.criteria.established.minLiquidity &&
+                          volume24h >= this.criteria.established.minVolume &&
+                          change24h >= this.criteria.established.minChange24h &&
+                          change1h >= this.criteria.established.minChange1h;
+            
+            if (passes) {
+                analysis.categories.push({
+                    type: 'established',
+                    label: this.criteria.established.label,
+                    score: change24h + (change6h || 0) * 1.5 + (change1h || 0) * 2
+                });
+            }
+        }
+        
+        // Test Momentum
+        if (token.chainId === 'solana' && age && age <= this.criteria.momentum.maxAge) {
+            const passes = liquidity >= this.criteria.momentum.minLiquidity &&
+                          volume24h >= this.criteria.momentum.minVolume &&
+                          change1h >= this.criteria.momentum.minChange1h &&
+                          change6h >= this.criteria.momentum.minChange6h;
+            
+            if (passes) {
+                analysis.categories.push({
+                    type: 'momentum',
+                    label: this.criteria.momentum.label,
+                    score: (change1h || 0) * 3 + (change6h || 0) * 2 + (change24h || 0)
+                });
+            }
+        }
+        
+        // Test Blue Chip
+        if (token.chainId === 'solana' && age && age <= this.criteria.blueChip.maxAge) {
+            const isPopular = this.criteria.blueChip.popularSymbols.includes(symbol.toUpperCase());
+            const passes = (isPopular || liquidity >= this.criteria.blueChip.minLiquidity) &&
+                          volume24h >= this.criteria.blueChip.minVolume &&
+                          change24h >= this.criteria.blueChip.minChange24h;
+            
+            if (passes) {
+                analysis.categories.push({
+                    type: 'blueChip',
+                    label: this.criteria.blueChip.label,
+                    score: (change24h || 0) + (isPopular ? 50 : 0) + (liquidity / 100000)
+                });
+            }
+        }
+        
+        // Score final = meilleur score parmi les catégories
+        analysis.bestCategory = analysis.categories.length > 0 ? 
+            analysis.categories.reduce((best, current) => 
+                current.score > best.score ? current : best
+            ) : null;
+        
+        analysis.passes = analysis.categories.length > 0;
         
         return analysis;
     }
 
-    // Afficher l'analyse d'un token
+    // Afficher l'analyse
     displayAnalysis(analysis) {
-        const status = analysis.passesOriginal ? '✅ PASS' : '❌ FAIL';
-        const debugStatus = analysis.passesDebug ? '✅ DEBUG' : '❌ DEBUG';
+        const status = analysis.passes ? '✅ PASS' : '❌ SKIP';
+        const categoryStr = analysis.bestCategory ? 
+            `${analysis.bestCategory.label} (${analysis.bestCategory.score.toFixed(1)})` : 
+            'Aucune catégorie';
         
-        console.log(`\n📊 ${analysis.symbol} (${analysis.source}) - ${status} | ${debugStatus}`);
-        console.log(`   📍 Adresse: ${analysis.address.slice(0, 8)}...`);
-        console.log(`   🏷️  Nom: ${analysis.name}`);
-        console.log(`   ⛓️  Chain: ${analysis.chainId} ${analysis.validChain ? '✅' : '❌'}`);
-        console.log(`   📅 Âge: ${analysis.age}h ${analysis.validAge ? '✅' : '❌'} (debug: ${analysis.debugAge ? '✅' : '❌'})`);
-        console.log(`   💧 Liquidité: $${analysis.liquidity.toLocaleString()} ${analysis.validLiquidity ? '✅' : '❌'} (debug: ${analysis.debugLiquidity ? '✅' : '❌'})`);
-        console.log(`   📊 Volume 24h: $${analysis.volume24h.toLocaleString()} ${analysis.validVolume ? '✅' : '❌'} (debug: ${analysis.debugVolume ? '✅' : '❌'})`);
-        console.log(`   📈 Change 24h: ${analysis.change24h}% ${analysis.validChange ? '✅' : '❌'} (debug: ${analysis.debugChange ? '✅' : '❌'})`);
-        console.log(`   📈 Change 6h: ${analysis.change6h}%`);
-        console.log(`   📈 Change 1h: ${analysis.change1h}%`);
+        console.log(`\n${status} ${analysis.symbol} - ${categoryStr}`);
+        console.log(`   📍 ${analysis.address.slice(0, 12)}...`);
+        console.log(`   🏷️  ${analysis.name}`);
+        console.log(`   📅 Âge: ${analysis.age}h`);
+        console.log(`   💧 Liquidité: $${analysis.liquidity.toLocaleString()}`);
+        console.log(`   📊 Volume 24h: $${analysis.volume24h.toLocaleString()}`);
+        console.log(`   📈 Changes: 1h: ${analysis.change1h}% | 6h: ${analysis.change6h}% | 24h: ${analysis.change24h}%`);
+        console.log(`   🎯 Source: ${analysis.source}`);
         
-        // Raisons d'échec
-        if (!analysis.passesOriginal) {
-            const reasons = [];
-            if (!analysis.validChain) reasons.push('❌ Pas Solana');
-            if (!analysis.validAge) reasons.push(`❌ Âge: ${analysis.age}h > ${this.maxAgeHours}h`);
-            if (!analysis.validLiquidity) reasons.push(`❌ Liquidité: $${analysis.liquidity} < $${this.minLiquidity}`);
-            if (!analysis.validVolume) reasons.push(`❌ Volume: $${analysis.volume24h} < $${this.minVolume}`);
-            if (!analysis.validChange) reasons.push(`❌ Change: ${analysis.change24h}% < ${this.minChange}%`);
-            console.log(`   🚫 Raisons d'échec: ${reasons.join(', ')}`);
+        if (analysis.categories.length > 1) {
+            console.log(`   🏆 Multiples catégories: ${analysis.categories.map(c => c.label).join(', ')}`);
         }
     }
 
-    // Scanner 1: Tokens trending récents
-    async scanTrendingTokens() {
-        console.log('\n🔍 SCAN 1: Tokens Trending Récents');
+    // Scanner DexScreener pour Solana
+    async scanDexScreener() {
+        console.log('\n🔍 SCAN DEXSCREENER SOLANA');
         console.log('═'.repeat(50));
         
         const results = [];
         
         try {
-            const response = await fetch('https://api.dexscreener.com/token-profiles/latest/v1');
-            
-            if (!response.ok) {
-                console.log(`❌ Erreur API: ${response.status}`);
-                return results;
-            }
-            
-            const data = await response.json();
-            console.log(`📡 Reçu ${data.length} token profiles`);
-            
-            let processedCount = 0;
-            const maxProcess = 20; // Analyser plus de tokens pour debug
-            
-            for (const tokenProfile of data.slice(0, maxProcess)) {
-                try {
-                    if (!tokenProfile.tokenAddress) continue;
-                    
-                    console.log(`\n🔄 Traitement ${++processedCount}/${maxProcess}: ${tokenProfile.tokenAddress.slice(0, 8)}...`);
-                    
-                    const pairsResponse = await fetch(
-                        `https://api.dexscreener.com/latest/dex/tokens/${tokenProfile.tokenAddress}`
-                    );
-                    
-                    if (pairsResponse.ok) {
-                        const pairsData = await pairsResponse.json();
-                        
-                        if (pairsData.pairs && pairsData.pairs.length > 0) {
-                            console.log(`   📊 Trouvé ${pairsData.pairs.length} paires`);
-                            
-                            for (const pair of pairsData.pairs) {
-                                const analysis = this.analyzeToken(pair, 'TRENDING');
-                                this.displayAnalysis(analysis);
-                                results.push(analysis);
-                            }
-                        } else {
-                            console.log(`   ❌ Aucune paire trouvée`);
-                        }
-                    } else {
-                        console.log(`   ❌ Erreur API pairs: ${pairsResponse.status}`);
-                    }
-                    
-                    // Rate limiting
-                    await new Promise(resolve => setTimeout(resolve, 500));
-                    
-                } catch (error) {
-                    console.log(`   ❌ Erreur: ${error.message}`);
-                }
-            }
-            
-        } catch (error) {
-            console.error('❌ Erreur scan trending:', error.message);
-        }
-        
-        return results;
-    }
-
-    // Scanner 2: Recherche générale Solana
-    async scanGeneralSolana() {
-        console.log('\n🔍 SCAN 2: Recherche Générale Solana');
-        console.log('═'.repeat(50));
-        
-        const results = [];
-        
-        try {
-            const response = await fetch('https://api.dexscreener.com/latest/dex/search?q=solana');
-            
-            if (!response.ok) {
-                console.log(`❌ Erreur API: ${response.status}`);
-                return results;
-            }
-            
-            const data = await response.json();
-            console.log(`📡 Reçu ${data.pairs?.length || 0} paires`);
-            
-            if (data.pairs) {
-                const maxAnalyze = 30; // Analyser plus de paires
-                
-                for (let i = 0; i < Math.min(data.pairs.length, maxAnalyze); i++) {
-                    const pair = data.pairs[i];
-                    const analysis = this.analyzeToken(pair, 'GENERAL');
-                    this.displayAnalysis(analysis);
-                    results.push(analysis);
-                }
-            }
-            
-        } catch (error) {
-            console.error('❌ Erreur scan général:', error.message);
-        }
-        
-        return results;
-    }
-
-    // Scanner 3: Tokens spécifiques Solana
-    async scanSolanaSpecific() {
-        console.log('\n🔍 SCAN 3: Tokens Solana Spécifiques');
-        console.log('═'.repeat(50));
-        
-        const results = [];
-        
-        try {
-            // Essayer différents endpoints
+            // Plusieurs endpoints pour maximiser les résultats
             const endpoints = [
-                'https://api.dexscreener.com/latest/dex/tokens/solana',
-                'https://api.dexscreener.com/latest/dex/pairs/solana'
+                'https://api.dexscreener.com/latest/dex/search?q=SOL',
+                'https://api.dexscreener.com/latest/dex/pairs/solana',
+                'https://api.dexscreener.com/token-profiles/latest/v1'
             ];
             
             for (const endpoint of endpoints) {
+                console.log(`\n🔗 Endpoint: ${endpoint}`);
+                
                 try {
-                    console.log(`\n🔗 Test endpoint: ${endpoint}`);
                     const response = await fetch(endpoint);
                     
-                    if (response.ok) {
-                        const data = await response.json();
-                        console.log(`✅ Endpoint OK - Données reçues:`, typeof data);
+                    if (!response.ok) {
+                        console.log(`❌ Erreur: ${response.status}`);
+                        continue;
+                    }
+                    
+                    const data = await response.json();
+                    
+                    // Traiter selon le type de réponse
+                    if (endpoint.includes('token-profiles')) {
+                        // Token profiles - récupérer les pairs
+                        console.log(`📡 ${data.length} token profiles`);
                         
-                        if (data.pairs) {
-                            console.log(`📊 ${data.pairs.length} paires trouvées`);
+                        for (const profile of data.slice(0, 50)) {
+                            if (!profile.tokenAddress) continue;
                             
-                            for (let i = 0; i < Math.min(data.pairs.length, 10); i++) {
-                                const pair = data.pairs[i];
-                                const analysis = this.analyzeToken(pair, 'SOLANA-SPECIFIC');
-                                this.displayAnalysis(analysis);
-                                results.push(analysis);
+                            try {
+                                const pairResponse = await fetch(
+                                    `https://api.dexscreener.com/latest/dex/tokens/${profile.tokenAddress}`
+                                );
+                                
+                                if (pairResponse.ok) {
+                                    const pairData = await pairResponse.json();
+                                    
+                                    if (pairData.pairs) {
+                                        for (const pair of pairData.pairs) {
+                                            if (pair.chainId === 'solana') {
+                                                const analysis = this.analyzeToken(pair, 'PROFILES');
+                                                results.push(analysis);
+                                                
+                                                if (analysis.passes) {
+                                                    this.displayAnalysis(analysis);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                
+                                await new Promise(resolve => setTimeout(resolve, 200));
+                            } catch (error) {
+                                console.log(`   ⚠️ Erreur pair: ${error.message}`);
                             }
                         }
                     } else {
-                        console.log(`❌ Endpoint failed: ${response.status}`);
+                        // Réponses avec pairs directes
+                        const pairs = data.pairs || [];
+                        console.log(`📡 ${pairs.length} pairs`);
+                        
+                        for (const pair of pairs.slice(0, 100)) {
+                            if (pair.chainId === 'solana') {
+                                const analysis = this.analyzeToken(pair, 'DIRECT');
+                                results.push(analysis);
+                                
+                                if (analysis.passes) {
+                                    this.displayAnalysis(analysis);
+                                }
+                            }
+                        }
                     }
-                    
-                    await new Promise(resolve => setTimeout(resolve, 1000));
                     
                 } catch (error) {
                     console.log(`❌ Erreur endpoint: ${error.message}`);
                 }
+                
+                await new Promise(resolve => setTimeout(resolve, 1000));
             }
             
         } catch (error) {
-            console.error('❌ Erreur scan Solana:', error.message);
+            console.error('❌ Erreur scan DexScreener:', error.message);
         }
         
         return results;
     }
 
-    // Analyser tous les résultats
-    analyzeResults(allResults) {
-        console.log('\n📊 ANALYSE GLOBALE DES RÉSULTATS');
+    // Scanner spécifique pour tokens populaires
+    async scanPopularTokens() {
+        console.log('\n🔍 SCAN TOKENS POPULAIRES');
         console.log('═'.repeat(50));
         
-        const stats = {
-            total: allResults.length,
-            passOriginal: allResults.filter(r => r.passesOriginal).length,
-            passDebug: allResults.filter(r => r.passesDebug).length,
-            bySource: {},
-            failureReasons: {
-                chain: allResults.filter(r => !r.validChain).length,
-                age: allResults.filter(r => !r.validAge).length,
-                liquidity: allResults.filter(r => !r.validLiquidity).length,
-                volume: allResults.filter(r => !r.validVolume).length,
-                change: allResults.filter(r => !r.validChange).length
+        const results = [];
+        const popularTokens = [
+            'So11111111111111111111111111111111111111112', // SOL
+            'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263', // BONK
+            'EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm', // WIF
+            'DflHWsLnrLZuNKGgBH7KBCGvLbNYfHjLWfXGYdQqZY3r', // TRUMP
+            'AGFEad2et2ZJif9jaGpdMixQqvW5i81aBdvKe7PHNfz3', // POPCAT
+            'CzLSujWBLFsSjncfkh59rUFqvafWcY5tzedWJSuypump', // PNUT
+            'ukHH6c7mMyiWCf1b9pnWe25TSpkDDt3H5pQZgZ74J82', // BOME
+        ];
+        
+        for (const tokenAddress of popularTokens) {
+            try {
+                console.log(`\n🔍 Analyse: ${tokenAddress.slice(0, 12)}...`);
+                
+                const response = await fetch(
+                    `https://api.dexscreener.com/latest/dex/tokens/${tokenAddress}`
+                );
+                
+                if (response.ok) {
+                    const data = await response.json();
+                    
+                    if (data.pairs) {
+                        for (const pair of data.pairs) {
+                            if (pair.chainId === 'solana') {
+                                const analysis = this.analyzeToken(pair, 'POPULAR');
+                                results.push(analysis);
+                                this.displayAnalysis(analysis);
+                            }
+                        }
+                    }
+                }
+                
+                await new Promise(resolve => setTimeout(resolve, 500));
+                
+            } catch (error) {
+                console.log(`❌ Erreur token ${tokenAddress}: ${error.message}`);
             }
-        };
+        }
         
-        // Stats par source
-        allResults.forEach(r => {
-            if (!stats.bySource[r.source]) stats.bySource[r.source] = 0;
-            stats.bySource[r.source]++;
+        return results;
+    }
+
+    // Analyser les résultats
+    analyzeResults(allResults) {
+        console.log('\n📊 ANALYSE GLOBALE');
+        console.log('═'.repeat(50));
+        
+        const passing = allResults.filter(r => r.passes);
+        const byCategory = {};
+        
+        passing.forEach(r => {
+            const cat = r.bestCategory.type;
+            if (!byCategory[cat]) byCategory[cat] = [];
+            byCategory[cat].push(r);
         });
         
-        console.log(`📈 Total tokens analysés: ${stats.total}`);
-        console.log(`✅ Passent critères originaux: ${stats.passOriginal}`);
-        console.log(`🔧 Passent critères debug: ${stats.passDebug}`);
+        console.log(`📈 Total analysés: ${allResults.length}`);
+        console.log(`✅ Tokens valides: ${passing.length}`);
         
-        console.log('\n📊 Par source:');
-        Object.entries(stats.bySource).forEach(([source, count]) => {
-            console.log(`   ${source}: ${count} tokens`);
-        });
-        
-        console.log('\n❌ Raisons d\'échec:');
-        console.log(`   🚫 Pas Solana: ${stats.failureReasons.chain}`);
-        console.log(`   ⏰ Âge trop élevé: ${stats.failureReasons.age}`);
-        console.log(`   💧 Liquidité trop faible: ${stats.failureReasons.liquidity}`);
-        console.log(`   📊 Volume trop faible: ${stats.failureReasons.volume}`);
-        console.log(`   📈 Change trop faible: ${stats.failureReasons.change}`);
-        
-        // Tokens qui passent
-        const passing = allResults.filter(r => r.passesOriginal);
-        if (passing.length > 0) {
-            console.log('\n✅ TOKENS QUI PASSENT:');
-            passing.forEach(token => {
-                console.log(`   🎯 ${token.symbol} - ${token.source} - ${token.age}h, $${token.liquidity.toLocaleString()}, +${token.change24h}%`);
+        console.log('\n🏆 Par catégorie:');
+        Object.entries(byCategory).forEach(([category, tokens]) => {
+            console.log(`   ${this.criteria[category]?.label || category}: ${tokens.length} tokens`);
+            
+            // Top 3 de chaque catégorie
+            const top3 = tokens
+                .sort((a, b) => b.bestCategory.score - a.bestCategory.score)
+                .slice(0, 3);
+            
+            top3.forEach((token, i) => {
+                console.log(`     ${i+1}. ${token.symbol} - ${token.bestCategory.score.toFixed(1)} pts - ${token.age}h`);
             });
-        }
+        });
         
-        // Suggestions
-        console.log('\n💡 SUGGESTIONS:');
-        if (stats.failureReasons.age > stats.total * 0.5) {
-            console.log(`   📅 Beaucoup de tokens trop vieux (${stats.failureReasons.age}/${stats.total})`);
-            console.log(`   💡 Considérer augmenter maxAgeHours de ${this.maxAgeHours}h à ${this.debugMaxAgeHours}h`);
-        }
+        // Recommandations finales
+        console.log('\n🎯 RECOMMANDATIONS:');
+        const topTokens = passing
+            .sort((a, b) => b.bestCategory.score - a.bestCategory.score)
+            .slice(0, 10);
         
-        if (stats.failureReasons.liquidity > stats.total * 0.3) {
-            console.log(`   💧 Beaucoup de liquidité trop faible (${stats.failureReasons.liquidity}/${stats.total})`);
-            console.log(`   💡 Considérer réduire minLiquidity de $${this.minLiquidity} à $${this.debugMinLiquidity}`);
-        }
-        
-        if (stats.failureReasons.volume > stats.total * 0.3) {
-            console.log(`   📊 Beaucoup de volume trop faible (${stats.failureReasons.volume}/${stats.total})`);
-            console.log(`   💡 Considérer réduire minVolume de $${this.minVolume} à $${this.debugMinVolume}`);
-        }
-        
-        if (stats.failureReasons.change > stats.total * 0.3) {
-            console.log(`   📈 Beaucoup de change trop faible (${stats.failureReasons.change}/${stats.total})`);
-            console.log(`   💡 Considérer réduire minChange de ${this.minChange}% à ${this.debugMinChange}%`);
-        }
+        topTokens.forEach((token, i) => {
+            console.log(`   ${i+1}. ${token.symbol} (${token.bestCategory.label}) - Score: ${token.bestCategory.score.toFixed(1)}`);
+            console.log(`       📊 ${token.change1h}% 1h | ${token.change6h}% 6h | ${token.change24h}% 24h`);
+            console.log(`       💧 $${token.liquidity.toLocaleString()} liq | $${token.volume24h.toLocaleString()} vol`);
+        });
     }
 
     // Fonction principale
-    async runDebugScan() {
-        console.log('🚀 DÉMARRAGE DEBUG SCANNER');
+    async runScan() {
+        console.log('🚀 SCANNER SOLANA FOCUS - DÉMARRAGE');
         console.log('═'.repeat(60));
         
         const allResults = [];
         
-        // Lancer tous les scans
-        const trending = await this.scanTrendingTokens();
-        allResults.push(...trending);
+        // Scanner DexScreener
+        const dexResults = await this.scanDexScreener();
+        allResults.push(...dexResults);
         
         await new Promise(resolve => setTimeout(resolve, 2000));
         
-        const general = await this.scanGeneralSolana();
-        allResults.push(...general);
-        
-        await new Promise(resolve => setTimeout(resolve, 2000));
-        
-        const specific = await this.scanSolanaSpecific();
-        allResults.push(...specific);
+        // Scanner tokens populaires
+        const popularResults = await this.scanPopularTokens();
+        allResults.push(...popularResults);
         
         // Analyser les résultats
         this.analyzeResults(allResults);
         
-        console.log('\n🎉 DEBUG SCAN TERMINÉ');
-        return allResults;
+        console.log('\n🎉 SCAN TERMINÉ');
+        return allResults.filter(r => r.passes);
     }
 }
 
-// Fonction pour lancer le debug
-async function runDebugScan() {
-    const scanner = new DebugScanner();
-    await scanner.runDebugScan();
+// Fonction pour lancer le scan
+async function runSolanaFocusedScan() {
+    const scanner = new SolanaFocusedScanner();
+    return await scanner.runScan();
 }
 
 // Exécution si lancé directement
 if (require.main === module) {
-    runDebugScan().catch(error => {
-        console.error('❌ Erreur debug:', error);
+    runSolanaFocusedScan().catch(error => {
+        console.error('❌ Erreur scan:', error);
     });
 }
 
-module.exports = { DebugScanner, runDebugScan };
+module.exports = { SolanaFocusedScanner, runSolanaFocusedScan };

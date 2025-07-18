@@ -1383,3 +1383,31 @@ if (require.main === module) {
         runAutoTrader();
     }
 }
+// À la toute fin du fichier, après le module.exports
+// Serveur web simple pour satisfaire Render
+const express = require('express');
+const app = express();
+const port = process.env.PORT || 3000;
+
+// Route de santé
+app.get('/', (req, res) => {
+    res.json({
+        status: 'Bot Jupiter Scanner actif! 🚀',
+        uptime: process.uptime(),
+        lastScan: new Date().toISOString()
+    });
+});
+
+// Statistiques du bot
+app.get('/stats', (req, res) => {
+    res.json({
+        bot: 'Jupiter Scanner',
+        status: 'running',
+        scans: 'Toutes les 15 minutes'
+    });
+});
+
+// Démarrer le serveur
+app.listen(port, '0.0.0.0', () => {
+    console.log(`🌐 Serveur web actif sur port ${port}`);
+});
