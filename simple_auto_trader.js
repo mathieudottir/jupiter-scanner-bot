@@ -657,8 +657,6 @@ updateStatsOnSell(solReceived, solSpent, profitPercent, buyTime, symbol, result)
     console.log(`📈 Trade fermé: ${symbol} ${profit > 0 ? '+' : ''}${profit.toFixed(4)} SOL`);
 }
 
-// AFFICHAGE RÉCAP COMPLET
-
 
     // SURVEILLANCE ET GESTION DES POSITIONS
     async checkPositions() {
@@ -696,7 +694,80 @@ showPerformanceRecapConsole() {
     console.log('═'.repeat(80));
 }
 
-
+        async checkSinglePosition(tokenAddress, position) {
+        try {
+            // Obtenir le prix actuel via DexScreener
+            const response = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${tokenAddress}`);
+            if (!response.ok) return;
+            
+            const data = await response.json();
+            const pair = data.pairs?.find(p => p.chainId === 'solana');
+            if (!pair) return;
+            
+            const currentPrice = parseFloat(pair.priceUsd || 0);
+            if (currentPrice <= 0) return;
+            
+            const changePercent = ((currentPrice / position.buyPrice) - 1) * 100;
+            const holdTime = Date.now() - position.buyTime;
+            
+            // Mettre à jour le plus haut prix atteint
+            if (currentPrice > position.highestPrice) {
+                position.highestPrice = currentPrice;
+                position.highestPercent = changePercent;
+            }
+            
+            position.lastKnownPrice = currentPrice;
+            
+            console.log(`   💎 ${position.symbol}: ${changePercent > 0 ? '+' : ''}${changePercent.toFixed(1)}% (${((holdTime) / (1000 * 60)).toFixed(0)}min)`);
+            
+            // 1. VÉRIFIER STOP-LOSS
+            if (changePercent <= -this.stopLossPercent) {
+                console.log(`🛑 Stop-Loss déclenché: ${position.symbol} (${changePercent.toFixed(1)}%)`);
+                await this.sellEntirePosition(position, currentPrice, `Stop-Loss -${this.stopLossPercent}%`);
+                return;
+            }
+            
+            // 2. VÉRIFIER TRAILING STOP
+            if (this.useTrailingStop && position.highestPercent > 0) {
+                const trailingStopPrice = position.highestPrice * (1 - this.trailingStopPercent / 100);
+                if (currentPrice <= trailingStopPrice) {
+                    const trailingLoss = ((currentPrice / position.highestPrice) - 1) * 100;
+                    console.log(`📉 Trailing Stop déclenché: ${position.symbol} (${trailingLoss.toFixed(1)}% depuis le max)`);
+                    await this.sellEntirePosition(position, currentPrice, `Trailing Stop depuis +${position.highestPercent.toFixed(1)}%`);
+                    return;
+                }
+            }
+            
+            // 3. VÉRIFIER SORTIE PAR STAGNATION
+            if (this.stagnationExit.enabled) {
+                if (holdTime > this.stagnationExit.maxHoldTime) {
+                    console.log(`⏰ Sortie par temps maximum: ${position.symbol} (4h atteintes)`);
+                    await this.sellEntirePosition(position, currentPrice, "Temps maximum atteint (4h)");
+                    return;
+                }
+                
+                if (holdTime > this.stagnationExit.stagnantTime && 
+                    Math.abs(changePercent) < this.stagnationExit.stagnantThreshold) {
+                    console.log(`😴 Sortie par stagnation: ${position.symbol} (±${this.stagnationExit.stagnantThreshold}% depuis 2h)`);
+                    await this.sellEntirePosition(position, currentPrice, "Position stagnante");
+                    return;
+                }
+                
+                if (holdTime > this.stagnationExit.lossExitTime && 
+                    changePercent < this.stagnationExit.lossThreshold) {
+                    console.log(`🔴 Sortie par perte prolongée: ${position.symbol} (${changePercent.toFixed(1)}% depuis 1h30)`);
+                    await this.sellEntirePosition(position, currentPrice, "Perte prolongée");
+                    return;
+                }
+            }
+            
+            // 4. VÉRIFIER VENTES ÉCHELONNÉES
+            await this.checkStagedSells(position, changePercent, currentPrice);
+            
+        } catch (error) {
+            console.error(`❌ Erreur check position ${position.symbol}: ${error.message}`);
+        }
+    }
     // VENTES ÉCHELONNÉES
     async checkStagedSells(position, changePercent, currentPrice) {
         // Détecter si c'est un moonshot (>1000%)
@@ -981,11 +1052,6 @@ showPerformanceRecapConsole() {
         
         return boughtCount;
     }
-
-    // NOTIFICATIONS DISCORD
-   
-
-
 
     // AFFICHAGE DES COOLDOWNS ACTIFS
     showActiveCooldowns() {
