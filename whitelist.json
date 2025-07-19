@@ -102,10 +102,43 @@
       "rank": 11,
       "selection_reason": "Réseau IoT décentralisé - Infrastructure physique"
     },
+    
+    "GIGA": {
+      "address": "63LfDmNb3MQ8mw9MtZ2To9bEA2M71kZUUGq5tiJxcqj9",
+      "name": "Gigachad",
+      "category": "meme",
+      "verified": true,
+      "rank": 11,
+      "selection_reason": "Réseau IoT décentralisé - Infrastructure physique"
+    },
     "GRASS": {
       "address": "Grass7B4RdKfBCjTKgSqnXkqjwiGvQyFbuSCUJr3XXjs",
       "name": "Grass",
       "category": "ai",
+      "verified": true,
+      "rank": 12,
+      "selection_reason": "AI et data scraping - Innovation"
+      },
+      "LDO": {
+      "address": "HZRCwxP2Vq9PCpPXooayhJ2bxTpo5xfpQrwB1svh332p",
+      "name": "Lido DAO",
+      "category": "ai",
+      "verified": true,
+      "rank": 12,
+      "selection_reason": "AI et data scraping - Innovation"
+      },
+       "MEW": {
+      "address": "MEW1gQWJ3nEXg2qgERiKu7FAFj79PHvQVREQUzScPP5",
+      "name": "CAt in a dog world",
+      "category": "ai",
+      "verified": true,
+      "rank": 12,
+      "selection_reason": "AI et data scraping - Innovation"
+      },
+    "SPX": {
+      "address": "J3NKxxXZcnNiMjKw9hYb2K4LUxgwB6t1FtPtQVsv3KFr",
+      "name": "SPX6900",
+      "category": "meme",
       "verified": true,
       "rank": 12,
       "selection_reason": "AI et data scraping - Innovation"
