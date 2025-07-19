@@ -1001,74 +1001,7 @@ updateStatsOnSell(solReceived, solSpent, profitPercent, buyTime, symbol, result)
 }
 
 // AFFICHAGE RÉCAP COMPLET
-showPerformanceRecap() {
-    const now = new Date();
-    const sessionHours = ((Date.now() - this.stats.session.startTime) / (1000 * 60 * 60)).toFixed(1);
-    
-    console.log('\n' + '═'.repeat(80));
-    console.log(`📊 RÉCAP PERFORMANCE - ${now.toLocaleString()}`);
-    console.log('═'.repeat(80));
-    
-    // SESSION ACTUELLE
-    const sessionWinRate = this.stats.session.trades > 0 ? 
-        ((this.stats.session.wins / this.stats.session.trades) * 100).toFixed(1) : '0';
-    const sessionROI = this.stats.session.investedSOL > 0 ? 
-        ((this.stats.session.profitSOL / this.stats.session.investedSOL) * 100).toFixed(1) : '0';
-        
-    console.log(`🕐 SESSION (${sessionHours}h):`);
-    console.log(`   Trades: ${this.stats.session.trades} | Wins: ${this.stats.session.wins} | Losses: ${this.stats.session.losses} | WR: ${sessionWinRate}%`);
-    console.log(`   Investi: ${this.stats.session.investedSOL.toFixed(3)} SOL | Profit: ${this.stats.session.profitSOL > 0 ? '+' : ''}${this.stats.session.profitSOL.toFixed(4)} SOL | ROI: ${sessionROI}%`);
-    
-    // AUJOURD'HUI
-    const dailyWinRate = this.stats.daily.trades > 0 ? 
-        ((this.stats.daily.wins / this.stats.daily.trades) * 100).toFixed(1) : '0';
-    const dailyROI = this.stats.daily.investedSOL > 0 ? 
-        ((this.stats.daily.profitSOL / this.stats.daily.investedSOL) * 100).toFixed(1) : '0';
-        
-    console.log(`📅 AUJOURD'HUI (${this.stats.daily.date}):`);
-    console.log(`   Trades: ${this.stats.daily.trades} | Wins: ${this.stats.daily.wins} | Losses: ${this.stats.daily.losses} | WR: ${dailyWinRate}%`);
-    console.log(`   Investi: ${this.stats.daily.investedSOL.toFixed(3)} SOL | Profit: ${this.stats.daily.profitSOL > 0 ? '+' : ''}${this.stats.daily.profitSOL.toFixed(4)} SOL | ROI: ${dailyROI}%`);
-    
-    // CETTE HEURE
-    const hourlyWinRate = this.stats.hourly.trades > 0 ? 
-        ((this.stats.hourly.wins / this.stats.hourly.trades) * 100).toFixed(1) : '0';
-        
-    console.log(`⏰ CETTE HEURE (${this.stats.hourly.hour}h):`);
-    console.log(`   Trades: ${this.stats.hourly.trades} | Wins: ${this.stats.hourly.wins} | Losses: ${this.stats.hourly.losses} | WR: ${hourlyWinRate}%`);
-    console.log(`   Profit: ${this.stats.hourly.profitSOL > 0 ? '+' : ''}${this.stats.hourly.profitSOL.toFixed(4)} SOL`);
-    
-    // ALL TIME
-    const allTimeWinRate = this.stats.allTime.totalTrades > 0 ? 
-        ((this.stats.allTime.wins / this.stats.allTime.totalTrades) * 100).toFixed(1) : '0';
-    const allTimeROI = this.stats.allTime.totalInvestedSOL > 0 ? 
-        ((this.stats.allTime.totalProfitSOL / this.stats.allTime.totalInvestedSOL) * 100).toFixed(1) : '0';
-    const avgHoldHours = (this.stats.allTime.avgHoldTime / (1000 * 60 * 60)).toFixed(1);
-        
-    console.log(`🏆 ALL TIME:`);
-    console.log(`   Trades: ${this.stats.allTime.totalTrades} | Wins: ${this.stats.allTime.wins} | Losses: ${this.stats.allTime.losses} | WR: ${allTimeWinRate}%`);
-    console.log(`   Investi: ${this.stats.allTime.totalInvestedSOL.toFixed(3)} SOL | Profit: ${this.stats.allTime.totalProfitSOL > 0 ? '+' : ''}${this.stats.allTime.totalProfitSOL.toFixed(4)} SOL | ROI: ${allTimeROI}%`);
-    console.log(`   Hold moyen: ${avgHoldHours}h | Best: ${this.stats.allTime.bestTrade.symbol} (+${this.stats.allTime.bestTrade.profit.toFixed(1)}%) | Worst: ${this.stats.allTime.worstTrade.symbol} (${this.stats.allTime.worstTrade.profit.toFixed(1)}%)`);
-    
-    // POSITIONS ACTUELLES
-    console.log(`💼 POSITIONS ACTUELLES (${this.positions.size}):`);
-    if (this.positions.size > 0) {
-        for (const [, position] of this.positions.entries()) {
-            const currentPrice = position.lastKnownPrice || position.buyPrice;
-            const changePercent = ((currentPrice / position.buyPrice) - 1) * 100;
-            const holdTimeMin = ((Date.now() - position.buyTime) / (1000 * 60)).toFixed(0);
-            const unrealizedProfit = (position.currentAmount / position.buyAmount * position.solSpent * (1 + changePercent/100)) - position.solSpent + position.totalSolReceived;
-            
-            const emoji = changePercent > 10 ? '🚀' : changePercent > 0 ? '📈' : changePercent > -10 ? '⚠️' : '🔴';
-            const partialInfo = position.partialSells > 0 ? ` (${position.partialSells} ventes)` : '';
-            
-            console.log(`   ${emoji} ${position.symbol}: ${changePercent > 0 ? '+' : ''}${changePercent.toFixed(1)}% • ${holdTimeMin}min • P&L: ${unrealizedProfit > 0 ? '+' : ''}${unrealizedProfit.toFixed(4)} SOL${partialInfo}`);
-        }
-    } else {
-        console.log(`   Aucune position ouverte`);
-    }
-    
-    console.log('═'.repeat(80));
-}
+
 
     // SURVEILLANCE ET GESTION DES POSITIONS
     async checkPositions() {
@@ -1085,7 +1018,116 @@ showPerformanceRecap() {
             }
         }
     }
+        // RÉCAP PERFORMANCE DISCORD
+async sendPerformanceRecapToDiscord() {
+    try {
+        const channel = await this.client.channels.fetch(this.channelId);
+        if (!channel) return;
 
+        const now = new Date();
+        const sessionHours = ((Date.now() - this.stats.session.startTime) / (1000 * 60 * 60)).toFixed(1);
+        
+        // Calculer les pourcentages
+        const sessionWinRate = this.stats.session.trades > 0 ? 
+            ((this.stats.session.wins / this.stats.session.trades) * 100).toFixed(1) : '0';
+        const sessionROI = this.stats.session.investedSOL > 0 ? 
+            ((this.stats.session.profitSOL / this.stats.session.investedSOL) * 100).toFixed(1) : '0';
+            
+        const dailyWinRate = this.stats.daily.trades > 0 ? 
+            ((this.stats.daily.wins / this.stats.daily.trades) * 100).toFixed(1) : '0';
+        const dailyROI = this.stats.daily.investedSOL > 0 ? 
+            ((this.stats.daily.profitSOL / this.stats.daily.investedSOL) * 100).toFixed(1) : '0';
+            
+        const allTimeWinRate = this.stats.allTime.totalTrades > 0 ? 
+            ((this.stats.allTime.wins / this.stats.allTime.totalTrades) * 100).toFixed(1) : '0';
+        const allTimeROI = this.stats.allTime.totalInvestedSOL > 0 ? 
+            ((this.stats.allTime.totalProfitSOL / this.stats.allTime.totalInvestedSOL) * 100).toFixed(1) : '0';
+
+        // Embed principal
+        const embed = new EmbedBuilder()
+            .setColor(this.stats.session.profitSOL >= 0 ? 0x00ff00 : 0xff9900)
+            .setTitle('📊 RÉCAP PERFORMANCE AUTO-TRADER')
+            .setDescription(`**Rapport automatique toutes les 10 minutes**`)
+            .addFields(
+                {
+                    name: `🕐 SESSION (${sessionHours}h)`,
+                    value: `Trades: ${this.stats.session.trades} | Wins: ${this.stats.session.wins} | Losses: ${this.stats.session.losses}\n` +
+                           `Win Rate: ${sessionWinRate}% | ROI: ${sessionROI}%\n` +
+                           `Investi: ${this.stats.session.investedSOL.toFixed(3)} SOL\n` +
+                           `Profit: ${this.stats.session.profitSOL > 0 ? '+' : ''}${this.stats.session.profitSOL.toFixed(4)} SOL`,
+                    inline: false
+                },
+                {
+                    name: `📅 AUJOURD'HUI`,
+                    value: `Trades: ${this.stats.daily.trades} | Wins: ${this.stats.daily.wins} | Losses: ${this.stats.daily.losses}\n` +
+                           `Win Rate: ${dailyWinRate}% | ROI: ${dailyROI}%\n` +
+                           `Investi: ${this.stats.daily.investedSOL.toFixed(3)} SOL\n` +
+                           `Profit: ${this.stats.daily.profitSOL > 0 ? '+' : ''}${this.stats.daily.profitSOL.toFixed(4)} SOL`,
+                    inline: false
+                },
+                {
+                    name: `🏆 ALL TIME`,
+                    value: `Trades: ${this.stats.allTime.totalTrades} | Wins: ${this.stats.allTime.wins} | Losses: ${this.stats.allTime.losses}\n` +
+                           `Win Rate: ${allTimeWinRate}% | ROI: ${allTimeROI}%\n` +
+                           `Investi: ${this.stats.allTime.totalInvestedSOL.toFixed(3)} SOL\n` +
+                           `Profit Total: ${this.stats.allTime.totalProfitSOL > 0 ? '+' : ''}${this.stats.allTime.totalProfitSOL.toFixed(4)} SOL`,
+                    inline: false
+                }
+            )
+            .setTimestamp();
+
+        // Ajouter positions actuelles si il y en a
+        if (this.positions.size > 0) {
+            let positionsText = '';
+            for (const [, position] of this.positions.entries()) {
+                const currentPrice = position.lastKnownPrice || position.buyPrice;
+                const changePercent = ((currentPrice / position.buyPrice) - 1) * 100;
+                const holdTimeMin = ((Date.now() - position.buyTime) / (1000 * 60)).toFixed(0);
+                
+                const emoji = changePercent > 10 ? '🚀' : changePercent > 0 ? '📈' : changePercent > -10 ? '⚠️' : '🔴';
+                positionsText += `${emoji} ${position.symbol}: ${changePercent > 0 ? '+' : ''}${changePercent.toFixed(1)}% (${holdTimeMin}min)\n`;
+            }
+            
+            embed.addFields({
+                name: `💼 POSITIONS ACTUELLES (${this.positions.size})`,
+                value: positionsText || 'Aucune position ouverte',
+                inline: false
+            });
+        }
+
+        await channel.send({
+            embeds: [embed]
+        });
+        
+        console.log('📊 Récap performance envoyé sur Discord');
+        
+    } catch (error) {
+        console.error('❌ Erreur envoi récap Discord:', error.message);
+        // Fallback console si Discord fail
+        console.log('📊 Fallback: Récap en console');
+        this.showPerformanceRecapConsole();
+    }
+}
+
+// Version console en backup
+showPerformanceRecapConsole() {
+    const now = new Date();
+    const sessionHours = ((Date.now() - this.stats.session.startTime) / (1000 * 60 * 60)).toFixed(1);
+    
+    console.log('\n' + '═'.repeat(80));
+    console.log(`📊 RÉCAP PERFORMANCE - ${now.toLocaleString()}`);
+    console.log('═'.repeat(80));
+    
+    const sessionWinRate = this.stats.session.trades > 0 ? 
+        ((this.stats.session.wins / this.stats.session.trades) * 100).toFixed(1) : '0';
+    const sessionROI = this.stats.session.investedSOL > 0 ? 
+        ((this.stats.session.profitSOL / this.stats.session.investedSOL) * 100).toFixed(1) : '0';
+        
+    console.log(`🕐 SESSION (${sessionHours}h):`);
+    console.log(`   Trades: ${this.stats.session.trades} | Wins: ${this.stats.session.wins} | Losses: ${this.stats.session.losses} | WR: ${sessionWinRate}%`);
+    console.log(`   Investi: ${this.stats.session.investedSOL.toFixed(3)} SOL | Profit: ${this.stats.session.profitSOL > 0 ? '+' : ''}${this.stats.session.profitSOL.toFixed(4)} SOL | ROI: ${sessionROI}%`);
+    console.log('═'.repeat(80));
+}
     async checkSinglePosition(tokenAddress, position) {
         try {
             // Obtenir le prix actuel via DexScreener
@@ -1662,9 +1704,9 @@ showPerformanceRecap() {
         let scanCount = 0;
         
         // Timer récap performance (toutes les 10 minutes)
-        const performanceTimer = setInterval(() => {
+        const performanceTimer = setInterval(async () => {
     try {
-        this.showPerformanceRecap();
+        await this.sendPerformanceRecapToDiscord();
     } catch (error) {
         console.log('📊 Récap en attente...');
     }
