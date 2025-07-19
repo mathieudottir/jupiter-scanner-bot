@@ -142,25 +142,9 @@
     "rank": null,
     "selection_reason": "Memecoin viral sur Solana"
   },
-  "WIF": {
-    "address": "EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm",
-    "name": "dogwifhat",
-    "category": "meme",
-    "verified": true,
-    "rank": null,
-    "selection_reason": "Un des leaders des memecoins Solana"
-  },
     "AGI": {
     "address": "8bUbe1ujsM1G3JEbBWVVCXa2widmuPdKUB2rGKMYFw7R",
     "name": "Delysium",
-    "category": "meme",
-    "verified": true,
-    "rank": null,
-    "selection_reason": "Un des leaders des memecoins Solana"
-  },
-      "Trencher": {
-    "address": "8ncucXv6U6epZKHPbgaEBcEK399TpHGKCquSt4RnmX4f",
-    "name": "TRENCHER",
     "category": "meme",
     "verified": true,
     "rank": null,
@@ -173,15 +157,8 @@
     "verified": true,
     "rank": null,
     "selection_reason": "Un des leaders des memecoins Solana"
-  },
-  "MOG": {
-    "address": "26VfKb7jjtdEdvfovoBijScoZmJbWWasFZkgfUD5w7cy",
-    "name": "Mog Coin",
-    "category": "meme",
-    "verified": true,
-    "rank": null,
-    "selection_reason": "Memecoin populaire - style humoristique"
-  },
+  }
+  ,
     "AI16Z": {
       "address": "HeLp6NuQkmYB4pYWo2zYs22mESHXPQYzXbB8n4V98jwC",
       "name": "ai16z",

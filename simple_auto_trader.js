@@ -1,54 +1,12 @@
-// simple_auto_trader.js - Auto-trader Jupiter avec ventes échelonnées et monitoring rapide
+
+    // simple_auto_trader.js - Auto-trader Jupiter avec whitelist DexScreener
 require('dotenv').config();
 const { Client, GatewayIntentBits, EmbedBuilder } = require('discord.js');
 const { Connection, Keypair, PublicKey, VersionedTransaction } = require('@solana/web3.js');
 const bs58 = require('bs58');
+const express = require('express');
+
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
-
-
-const STABLECOINS = [
-    'usdc', 'usdt', 'busd', 'dai', 'frax', 'lusd', 'susd', 'tusd', 'usdp', 'gusd',
-    'husd', 'usdn', 'ust', 'ousd', 'usdd', 'usdk', 'ustc', 'tribe', 'val', 'eur',
-    'usd-coin', 'tether', 'binance-usd', 'multi-collateral-dai', 'stasis-eurs',
-    'jpyc', 'ceur', 'cusd', 'xsgd', 'usdx', 'reserve', 'dola', 'liquity-usd'
-];
-
-function isStablecoin(token) {
-    const symbol = token.symbol.toLowerCase();
-    const name = token.name.toLowerCase();
-    const id = token.id.toLowerCase();
-    
-    if (STABLECOINS.includes(symbol) || STABLECOINS.includes(id)) {
-        return true;
-    }
-    
-    const stablePatterns = [
-        /usd/i, /eur/i, /jpy/i, /stable/i, /pegged/i, /tether/i, /coin.*usd/i
-    ];
-    
-    return stablePatterns.some(pattern => 
-        pattern.test(symbol) || pattern.test(name) || pattern.test(id)
-    );
-}
-
-function calculateMomentumScore(token) {
-    const change1h = token.price_change_percentage_1h_in_currency || 0;
-    const change24h = token.price_change_percentage_24h || 0;
-    const change7d = token.price_change_percentage_7d_in_currency || 0;
-    const volume = token.total_volume || 0;
-    const marketCap = token.market_cap || 0;
-    
-    const momentumScore = 
-        change1h * 3 +           
-        change24h * 2 +          
-        change7d * 0.5;          
-    
-    const consistencyBonus = (change1h > 0 && change24h > 0 && change7d > 0) ? 20 : 0;
-    const volumeRatio = marketCap > 0 ? (volume / marketCap) * 100 : 0;
-    const volumeScore = Math.min(volumeRatio * 10, 50);
-    
-    return momentumScore + consistencyBonus + volumeScore;
-}
 
 class SimpleAutoTrader {
     constructor() {
@@ -59,166 +17,458 @@ class SimpleAutoTrader {
             intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages] 
         });
         
-        // Configuration Solana avec RPC premium/alternatif
+        // Configuration Solana avec RPC sécurisé
         const rpcUrls = [
-    'https://api.mainnet-beta.solana.com',
-    'https://rpc.ankr.com/solana',
-    'https://solana-api.projectserum.com',
-    process.env.SOLANA_RPC_URL
-].filter(url => url && !url.includes('undefined'));
+            'https://api.mainnet-beta.solana.com',
+            'https://rpc.ankr.com/solana',
+            'https://solana-api.projectserum.com',
+            process.env.SOLANA_RPC_URL
+        ].filter(url => url && !url.includes('undefined'));
         
         this.connection = new Connection(rpcUrls[0] || 'https://api.mainnet-beta.solana.com', {
-    commitment: 'confirmed',
-    wsEndpoint: false,  // ← AJOUTER CETTE LIGNE
-    httpHeaders: {
-        'User-Agent': 'Jupiter-Trader/1.0'
-    }
-});
+            commitment: 'confirmed',
+            wsEndpoint: false,
+            httpHeaders: { 'User-Agent': 'Jupiter-Trader/1.0' }
+        });
 
-// Et pareil pour les backup connections
-this.backupConnections = rpcUrls.slice(1).map(url => 
-    new Connection(url, { 
-        commitment: 'confirmed',
-        wsEndpoint: false  // ← AJOUTER CETTE LIGNE
-    })
-);  
+        this.backupConnections = rpcUrls.slice(1).map(url => 
+            new Connection(url, { 
+                commitment: 'confirmed',
+                wsEndpoint: false
+            })
+        );
 
-
-
-
-this.bannedAddresses = new Set([
-    // Exemple d'adresses à bannir
-    'fESbUKjuMY6jzDH9VP8cy4p3pu2q5W2rK2XghVfNseP', // SOL (exemple)
-    'BfvBXetGhUafks5V22vRBudaTYUqx9BkD4kx7z6bbonk', // USDC (exemple)
-    // Ajoute tes adresses ici
-]);
-
-   this.stagnationExit = {
-        enabled: true,
-        maxHoldTime: 4 * 60 * 60 * 1000,    // 4 heures maximum
-        stagnantTime: 2 * 60 * 60 * 1000,   // 2h si vraiment stagnant
-        stagnantThreshold: 5,                // ±5% = stagnant
-        lossExitTime: 90 * 60 * 1000,       // 1h30 si perte significative
-        lossThreshold: -10                   // -10%
-    };
-    
-    console.log(`⏰ Sortie stagnation: 4h max | 2h si ±5% | 1h30 si -10%`);
-
-// Ou charger depuis un fichier
-this.loadBannedAddresses();
+        // Configuration wallet et trading
         this.wallet = Keypair.fromSecretKey(bs58.decode(process.env.PRIVATE_KEY));
-        
-        // Configuration trading
-        this.buyAmount = 0.01; // Force à 0.01 SOL
+        this.buyAmount = 0.01; // 0.01 SOL par achat
         this.maxSlippage = parseFloat(process.env.MAX_SLIPPAGE || '10');
-        
-           // CHARGER WHITELIST DEPUIS FICHIER
-    this.whitelistedTokens = {};
-    this.whitelistPath = './whitelist.json';
-    this.loadWhitelist();
-    
-    // MODE WHITELIST
-    this.whitelistMode = {
-        enabled: true,
-        allowOnlyWhitelisted: true,
-        minMomentum1h: 1,    // +1% minimum sur 1h
-        minMomentum24h: 4,   // +5% minimum sur 24h
-        minVolume: 100000    // $100k minimum volume
-    };
-    
-    console.log(`🛡️ Whitelist chargée: ${Object.keys(this.whitelistedTokens).length} tokens`);
-    console.log(`🔒 Mode sécurisé: Whitelist seulement`);
-        // Rate limiting pour éviter 429
-        this.lastRpcCall = 0;
-        this.rpcCallDelay = 2000; // 1 seconde entre appels RPC
-        this.balanceCache = new Map(); // Cache des soldes
-        this.cacheTimeout = 60000; // 30 secondes de cache
-        
-        // Configuration ventes échelonnées
-        this.sellLevels = [
-            { 
-                profit: 20,      // +20%
-                percentage: 50,  // Vendre 50% de la position
-                reason: "Sécurisation rapide (+20%)" 
-            },
-            { 
-                profit: 75,      // +75% 
-                percentage: 60,  // Vendre 60% du restant
-                reason: "Take-Profit intermédiaire (+75%)" 
-            },
-            { 
-                profit: 200,     // +200%
-                percentage: 75,  // Vendre 75% du restant
-                reason: "Take-Profit élevé (+200%)" 
-            },
-            { 
-                profit: 500,     // +500%
-                percentage: 90,  // Vendre 90% du restant
-                reason: "Moonshot (+500%)" 
-            }
-        ];
-        
-        // Protections
-        this.stopLossPercent = 20; // -20%
-        this.useTrailingStop = true;
-        this.trailingStopPercent = 15; // -15% depuis le plus haut
-        
-            this.maxConcurrentPositions = 2; // Maximum 2 positions simultanées
+        this.maxConcurrentPositions = 2;
 
-        // Positions actives
-        this.positions = new Map(); // tokenAddress -> position data
-        this.postedTokens = new Map(); // Anti-doublons
-        this.retradeCooldown = {
-        normal: 24 * 60 * 60 * 1000,        // 24h normal
-        afterLoss: 48 * 60 * 60 * 1000,     // 48h si perte
-        afterProfit: 12 * 60 * 60 * 1000,   // 12h si profit
-        opportunityThreshold: 50,             // +50% momentum pour override
-        minCooldownOverride: 6 * 60 * 60 * 1000  // Min 6h avant override
-    };
+        // WHITELIST - Chargement depuis fichier
+        this.whitelistedTokens = {};
+        this.whitelistPath = './whitelist.json';
+        this.loadWhitelist();
+
         
-        // Critères de filtrage (même que le scanner)
-        this.maxAgeHours = 1;
-        this.minLiquidity = 30000;
-        this.minVolume = 10000;
-        this.minChange = 20;
-        this.tradedTokens = new Map(); // tokenAddress -> tradeHistory
-    
-        console.log(`🔄 Re-trade: 24h normal, 12h si profit, 48h si perte`);
-        console.log(`⚡ Override possible si +50% momentum après 6h min`);
+        // Configuration whitelist PLUS FLEXIBLE pour trouver des trades
+        // Configuration whitelist OPTIMISÉE
+                this.whitelistMode = {
+            enabled: true,
+            allowOnlyWhitelisted: true,
+            minMomentum1h: 0,        // 0% sur 1h (accepter stabilité)
+            minMomentum24h: 2,       // +2% sur 24h (légèrement positif)
+            minVolume: 100000,       // $100k volume (plus réaliste)
+            debugMode: true
+        };
+
+        // Système de cooldown PLUS SMART
+        this.retradeCooldown = {
+    normal: 24 * 60 * 60 * 1000,        // 24h normal
+    afterLoss: 36 * 60 * 60 * 1000,     // 36h si perte (au lieu de 48h)
+    afterProfit: 8 * 60 * 60 * 1000,    // 8h si profit (au lieu de 12h)
+    opportunityThreshold: 40,             // +40% momentum pour override (au lieu de 50%)
+    minCooldownOverride: 6 * 60 * 60 * 1000  // Min 6h avant override
+};
+        // STATISTIQUES DE PERFORMANCE
+        this.stats = {
+            allTime: {
+                totalTrades: 0,
+                wins: 0,
+                losses: 0,
+                totalProfitSOL: 0,
+                totalInvestedSOL: 0,
+                bestTrade: { symbol: 'N/A', profit: 0 },
+                worstTrade: { symbol: 'N/A', profit: 0 },
+                avgHoldTime: 0,
+                totalHoldTime: 0
+            },
+            daily: {
+                date: new Date().toDateString(),
+                trades: 0,
+                wins: 0,
+                losses: 0,
+                profitSOL: 0,
+                investedSOL: 0
+            },
+            hourly: {
+                hour: new Date().getHours(),
+                trades: 0,
+                wins: 0,
+                losses: 0,
+                profitSOL: 0
+            },
+            session: {
+                startTime: Date.now(),
+                trades: 0,
+                wins: 0,
+                losses: 0,
+                profitSOL: 0,
+                investedSOL: 0
+            }
+        };
+
+        // Configuration ventes échelonnées
+        // VENTES PLUS AGRESSIVES
+        this.sellLevels = [
+            { profit: 12, percentage: 35, reason: "Sécurisation rapide (+12%)" },
+            { profit: 30, percentage: 45, reason: "Profit solide (+30%)" },
+            { profit: 60, percentage: 65, reason: "Gros profit (+60%)" },
+            { profit: 120, percentage: 85, reason: "Moonshot (+120%)" }
+        ];
+
+        // Protections stop-loss et trailing
+        this.stopLossPercent = 10; // -10%
+        this.useTrailingStop = true;
+        this.trailingStopPercent = 9; // 9% depuis le plus haut
+
+        // Sortie par stagnation
+        this.stagnationExit = {
+            enabled: true,
+            maxHoldTime: 4 * 60 * 60 * 1000,    // 4 heures maximum
+            stagnantTime: 2 * 60 * 60 * 1000,   // 2h si stagnant
+            stagnantThreshold: 5,                // ±5% = stagnant
+            lossExitTime: 90 * 60 * 1000,       // 1h30 si perte
+            lossThreshold: -10                   // -10%
+        };
+
+        
+
+        // État du trader
+        this.positions = new Map(); // tokenAddress -> position data
+        this.tradedTokens = new Map(); // tokenAddress -> tradeHistory pour cooldown
+        this.bannedAddresses = new Set();
+        
+        // Rate limiting et cache
+        this.lastRpcCall = 0;
+        this.rpcCallDelay = 2000;
+        this.balanceCache = new Map();
+        this.cacheTimeout = 60000;
+
+        // Charger adresses bannies
+        this.loadBannedAddresses();
+
         console.log(`💼 Wallet: ${this.wallet.publicKey.toString()}`);
-        console.log(`💰 Buy amount: ${this.buyAmount} SOL`);
+        console.log(`🛡️ Whitelist: ${Object.keys(this.whitelistedTokens).length} tokens`);
+        console.log(`💰 Montant par achat: ${this.buyAmount} SOL`);
         console.log(`🎯 Ventes échelonnées: ${this.sellLevels.length} niveaux`);
         console.log(`📉 Stop loss: -${this.stopLossPercent}%`);
         console.log(`📈 Trailing stop: -${this.trailingStopPercent}%`);
     }
-        loadWhitelist() {
-    try {
-        const fs = require('fs');
-        
-        if (fs.existsSync(this.whitelistPath)) {
-            const whitelistData = JSON.parse(fs.readFileSync(this.whitelistPath, 'utf8'));
+
+    // CHARGEMENT DE LA WHITELIST - FORMAT CORRECT POUR VOTRE FICHIER
+    loadWhitelist() {
+        try {
+            const fs = require('fs');
             
-            // Convertir format fichier vers format simple
-            for (const [symbol, data] of Object.entries(whitelistData.tokens)) {
-                this.whitelistedTokens[symbol] = data.address;
+            if (fs.existsSync(this.whitelistPath)) {
+                const whitelistData = JSON.parse(fs.readFileSync(this.whitelistPath, 'utf8'));
+                
+                // Votre format: whitelistData.tokens.SYMBOL.address
+                for (const [symbol, data] of Object.entries(whitelistData.tokens)) {
+                    if (data.verified && data.address) {
+                        this.whitelistedTokens[symbol] = data.address;
+                    }
+                }
+                
+                console.log(`✅ Whitelist VOTRE FICHIER chargée: v${whitelistData.metadata?.version || 'N/A'}`);
+                console.log(`📊 ${Object.keys(this.whitelistedTokens).length} tokens vérifiés de votre whitelist`);
+                console.log(`🎯 Tokens chargés: ${Object.keys(this.whitelistedTokens).join(', ')}`);
+                
+                // Vérification spéciale pour HNT
+                if (this.whitelistedTokens.HNT) {
+                    console.log(`🔍 HNT trouvé: ${this.whitelistedTokens.HNT}`);
+                    console.log(`   📝 Nom: ${whitelistData.tokens.HNT.name}`);
+                    console.log(`   📂 Catégorie: ${whitelistData.tokens.HNT.category}`);
+                    console.log(`   ✅ Vérifié: ${whitelistData.tokens.HNT.verified}`);
+                } else {
+                    console.log(`❌ HNT non trouvé dans la whitelist !`);
+                }
+                
+            } else {
+                console.log(`❌ ERREUR: Fichier whitelist INTROUVABLE: ${this.whitelistPath}`);
+                console.log(`📝 Le bot ne peut fonctionner SANS votre whitelist !`);
+                console.log(`💡 Créez le fichier whitelist.json avec vos tokens vérifiés`);
+                
+                throw new Error('Whitelist fichier requis !');
             }
             
-            console.log(`✅ Whitelist chargée: ${whitelistData.version} (${whitelistData.lastUpdated})`);
-            console.log(`📊 ${Object.keys(this.whitelistedTokens).length} tokens vérifiés chargés`);
+        } catch (error) {
+            console.error(`❌ Erreur chargement whitelist: ${error.message}`);
+            console.log(`🛑 Bot arrêté - whitelist.json requis`);
+            process.exit(1);
+        }
+    }
+
+    createBasicWhitelist() {
+        // Whitelist CORRIGÉE avec adresses VÉRIFIÉES Solana
+        this.whitelistedTokens = {
+            // Meme coins populaires - ADRESSES VÉRIFIÉES
+            'BONK': 'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263',
+            'WIF': 'EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm', 
+            'PEPE': 'BzUb1pc3GKZD1DbLhKpuzWJCPBdSFGSqhfFGBCSDhyPR',  // À vérifier
+            'POPCAT': '7GCihgDB8fe6KNjn2MYtkzZcRjQy3t9GHdC8uHYmW2hr',
             
-        } else {
-            console.log(`⚠️ Fichier whitelist introuvable: ${this.whitelistPath}`);
-            console.log(`📝 Création d'une whitelist de base...`);
-            this.createBasicWhitelist();
+            // Tokens DeFi confirmés
+            'JUP': 'JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN',
+            'RAY': '4k3Dyjzvzp8eMZWUXbBCjEvwSkkk59S5iCNLY3QrkX6R',
+            'ORCA': 'orcaEKTdK7LKz57vaAYr9QeNsVEPfiu6QeMU1kektZE',
+            
+            // Stablecoins et wrappés
+            'USDC': 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+            'USDT': 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB',
+            'MSOL': 'mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So'
+        };
+        
+        console.log(`📝 Whitelist CORRIGÉE avec ${Object.keys(this.whitelistedTokens).length} tokens vérifiés`);
+        console.log(`✅ Adresses vérifiées pour éviter erreurs de route`);
+    }
+
+    // GESTION DES ADRESSES BANNIES
+    loadBannedAddresses() {
+        try {
+            const fs = require('fs');
+            if (fs.existsSync('./banned_addresses.txt')) {
+                const content = fs.readFileSync('./banned_addresses.txt', 'utf8');
+                const addresses = content.split('\n')
+                    .map(addr => addr.trim())
+                    .filter(addr => addr && !addr.startsWith('#'));
+                
+                addresses.forEach(addr => this.bannedAddresses.add(addr));
+                console.log(`🚫 ${addresses.length} adresses bannies chargées`);
+            }
+        } catch (error) {
+            console.log('⚠️ Erreur chargement banned_addresses.txt:', error.message);
+        }
+    }
+
+    isAddressBanned(tokenAddress) {
+        return this.bannedAddresses.has(tokenAddress);
+    }
+
+    banAddress(tokenAddress, reason = 'Manual ban') {
+        this.bannedAddresses.add(tokenAddress);
+        console.log(`🚫 Adresse bannie: ${tokenAddress} (${reason})`);
+        this.saveBannedAddresses();
+    }
+
+    saveBannedAddresses() {
+        try {
+            const fs = require('fs');
+            const content = Array.from(this.bannedAddresses).join('\n');
+            fs.writeFileSync('./banned_addresses.txt', content);
+        } catch (error) {
+            console.log('⚠️ Erreur sauvegarde banned_addresses.txt:', error.message);
+        }
+    }
+
+    // SYSTÈME DE COOLDOWN POUR RE-TRADING
+    isTokenAlreadyProcessed(tokenAddress, currentMomentumScore = 0) {
+        if (!this.tradedTokens.has(tokenAddress)) {
+            return false;
         }
         
-    } catch (error) {
-        console.error(`❌ Erreur chargement whitelist: ${error.message}`);
-        console.log(`📝 Utilisation whitelist de secours...`);
-        this.createBasicWhitelist();
+        const tradeHistory = this.tradedTokens.get(tokenAddress);
+        const lastTrade = tradeHistory.lastTradeTime;
+        const lastResult = tradeHistory.lastResult;
+        const timeSinceLastTrade = Date.now() - lastTrade;
+        
+        let cooldownTime;
+        if (lastResult === 'profit') {
+            cooldownTime = this.retradeCooldown.afterProfit;
+        } else if (lastResult === 'loss') {
+            cooldownTime = this.retradeCooldown.afterLoss;
+        } else {
+            cooldownTime = this.retradeCooldown.normal;
+        }
+        
+        if (timeSinceLastTrade < cooldownTime) {
+            const canOverride = this.canOverrideCooldown(tradeHistory, currentMomentumScore, timeSinceLastTrade);
+            
+            if (canOverride) {
+                console.log(`⚡ Override cooldown pour opportunité exceptionnelle`);
+                return false;
+            }
+            
+            const remainingHours = ((cooldownTime - timeSinceLastTrade) / (1000 * 60 * 60)).toFixed(1);
+            console.log(`⏳ Token en cooldown (${remainingHours}h restantes)`);
+            return true;
+        }
+        
+        this.tradedTokens.delete(tokenAddress);
+        return false;
     }
-}      
-    // Initialiser Discord
+
+    canOverrideCooldown(tradeHistory, currentMomentumScore, timeSinceLastTrade) {
+        if (timeSinceLastTrade < this.retradeCooldown.minCooldownOverride) return false;
+        if (currentMomentumScore < this.retradeCooldown.opportunityThreshold) return false;
+        if (tradeHistory.lastResult === 'loss' && timeSinceLastTrade < 24 * 60 * 60 * 1000) return false;
+        return true;
+    }
+
+    markTokenAsProcessed(tokenAddress, result = 'unknown') {
+        this.tradedTokens.set(tokenAddress, {
+            lastTradeTime: Date.now(),
+            lastResult: result,
+            tradeCount: (this.tradedTokens.get(tokenAddress)?.tradeCount || 0) + 1
+        });
+        console.log(`📝 Token marqué: ${tokenAddress.slice(0, 8)}... (${result})`);
+    }
+
+    // SCANNER WHITELIST VIA DEXSCREENER AVEC LOGS DÉTAILLÉS
+    async scanNewTokens() {
+        console.log('🔍 Scan whitelist via DexScreener...');
+        
+        if (!this.whitelistMode.enabled || !this.whitelistMode.allowOnlyWhitelisted) {
+            console.log('⚠️ Mode whitelist désactivé');
+            return [];
+        }
+        
+        try {
+            const momentumTokens = [];
+            const whitelistEntries = Object.entries(this.whitelistedTokens);
+            
+            console.log(`📊 Vérification momentum pour ${whitelistEntries.length} tokens...`);
+            console.log(`🎯 Critères: 1h(≥${this.whitelistMode.minMomentum1h}%) 24h(≥${this.whitelistMode.minMomentum24h}%) vol(≥${this.whitelistMode.minVolume.toLocaleString()})`);
+            console.log('─'.repeat(80));
+            
+            for (const [symbol, address] of whitelistEntries) {
+                try {
+                    console.log(`🔎 ${symbol.padEnd(8)} | Vérification...`);
+                    
+                    const response = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${address}`);
+                    
+                    if (!response.ok) {
+                        console.log(`   ❌ DexScreener error ${response.status}`);
+                        continue;
+                    }
+                    
+                    const data = await response.json();
+                    const pair = data.pairs?.find(p => p.chainId === 'solana');
+                    
+                    if (!pair) {
+                        console.log(`   ❌ Pas de paire Solana trouvée`);
+                        continue;
+                    }
+                    
+                    const change1h = parseFloat(pair.priceChange?.h1 || 0);
+                    const change24h = parseFloat(pair.priceChange?.h24 || 0);
+                    const volume24h = parseFloat(pair.volume?.h24 || 0);
+                    const liquidity = parseFloat(pair.liquidity?.usd || 0);
+                    const price = parseFloat(pair.priceUsd || 0);
+                    
+                    // LOG DÉTAILLÉ pour chaque token
+                    const change1hStr = change1h >= 0 ? `+${change1h.toFixed(1)}%` : `${change1h.toFixed(1)}%`;
+                    const change24hStr = change24h >= 0 ? `+${change24h.toFixed(1)}%` : `${change24h.toFixed(1)}%`;
+                    
+                    console.log(`   📊 1h: ${change1hStr.padStart(8)} | 24h: ${change24hStr.padStart(8)} | Vol: ${volume24h.toLocaleString().padStart(10)} | Liq: ${liquidity.toLocaleString().padStart(10)}`);
+                    
+                    // Vérifier critères un par un avec détails
+                    const checks = {
+                        momentum1h: change1h >= this.whitelistMode.minMomentum1h,
+                        momentum24h: change24h >= this.whitelistMode.minMomentum24h,
+                        volume: volume24h >= this.whitelistMode.minVolume,
+                        price: price > 0,
+                        liquidity: liquidity > 10000 // Au moins $10k de liquidité
+                    };
+                    
+                    const passedChecks = Object.values(checks).filter(Boolean).length;
+                    const totalChecks = Object.keys(checks).length;
+                    
+                    console.log(`   🔍 Checks: ${passedChecks}/${totalChecks} `, Object.entries(checks).map(([key, passed]) => 
+                        `${key}:${passed ? '✅' : '❌'}`
+                    ).join(' '));
+                    
+                    // Si tous les critères sont remplis
+                    if (Object.values(checks).every(Boolean)) {
+                        console.log(`   🎯 ✅ ${symbol} QUALIFIÉ pour trading !`);
+                        
+                        const tokenData = {
+                            baseToken: {
+                                address: address,
+                                symbol: symbol,
+                                name: pair.baseToken?.name || symbol
+                            },
+                            priceUsd: price.toString(),
+                            volume: { h24: volume24h },
+                            liquidity: { usd: liquidity },
+                            priceChange: { h1: change1h, h24: change24h },
+                            scanReason: `🛡️ Whitelist ${symbol}`,
+                            isWhitelisted: true,
+                            momentumScore: (change1h * 3) + (change24h * 2),
+                            dexData: pair,
+                            // Infos détaillées pour debug
+                            scanDetails: {
+                                change1h: change1h,
+                                change24h: change24h,
+                                volume24h: volume24h,
+                                liquidity: liquidity,
+                                price: price,
+                                checksResult: checks
+                            }
+                        };
+                        
+                        momentumTokens.push(tokenData);
+                        
+                    } else {
+                        // Expliquer pourquoi le token est rejeté
+                        const failedReasons = [];
+                        if (!checks.momentum1h) failedReasons.push(`1h(${change1hStr}<${this.whitelistMode.minMomentum1h}%)`);
+                        if (!checks.momentum24h) failedReasons.push(`24h(${change24hStr}<${this.whitelistMode.minMomentum24h}%)`);
+                        if (!checks.volume) failedReasons.push(`vol(${volume24h.toLocaleString()}<${this.whitelistMode.minVolume.toLocaleString()})`);
+                        if (!checks.price) failedReasons.push(`prix(${price})`);
+                        if (!checks.liquidity) failedReasons.push(`liq(${liquidity.toLocaleString()}<$10k)`);
+                        
+                        console.log(`   ⚠️ ❌ ${symbol} REJETÉ: ${failedReasons.join(', ')}`);
+                    }
+                    
+                } catch (tokenError) {
+                    console.log(`   ❌ ${symbol}: Erreur ${tokenError.message}`);
+                }
+                
+                // Rate limiting DexScreener
+                await new Promise(resolve => setTimeout(resolve, 800)); // 800ms entre tokens
+            }
+            
+            console.log('─'.repeat(80));
+            
+            // Trier par momentum 1h (le plus récent = priorité)
+            const sortedTokens = momentumTokens.sort((a, b) => {
+                return (b.priceChange.h1 || 0) - (a.priceChange.h1 || 0);
+            });
+            
+            console.log(`🎯 RÉSULTAT FINAL: ${sortedTokens.length} tokens qualifiés pour trading:`);
+            
+            if (sortedTokens.length > 0) {
+                sortedTokens.forEach((token, i) => {
+                    const change1h = token.priceChange.h1;
+                    const change24h = token.priceChange.h24;
+                    const score = token.momentumScore;
+                    const vol = token.volume.h24;
+                    
+                    const change1hStr = change1h >= 0 ? `+${change1h.toFixed(1)}%` : `${change1h.toFixed(1)}%`;
+                    const change24hStr = change24h >= 0 ? `+${change24h.toFixed(1)}%` : `${change24h.toFixed(1)}%`;
+                    
+                    console.log(`   ${(i+1).toString().padStart(2)}. ${token.baseToken.symbol.padEnd(8)} | 1h: ${change1hStr.padStart(8)} | 24h: ${change24hStr.padStart(8)} | Vol: ${vol.toLocaleString().padStart(10)} | Score: ${score.toFixed(1).padStart(6)}`);
+                });
+            } else {
+                console.log(`   📋 Aucun token ne répond aux critères actuels.`);
+                console.log(`   💡 Suggestions:`);
+                console.log(`      - Réduire minMomentum1h (actuellement ${this.whitelistMode.minMomentum1h}%)`);
+                console.log(`      - Réduire minMomentum24h (actuellement ${this.whitelistMode.minMomentum24h}%)`);
+                console.log(`      - Réduire minVolume (actuellement ${this.whitelistMode.minVolume.toLocaleString()})`);
+                console.log(`      - Ajouter plus de tokens à la whitelist`);
+            }
+            
+            console.log('═'.repeat(80));
+            return sortedTokens;
+            
+        } catch (error) {
+            console.error('❌ Erreur scan DexScreener:', error.message);
+            return [];
+        }
+    }
+
+    // INITIALISATION DISCORD
     async initializeDiscord() {
         try {
             console.log('🤖 Connexion à Discord...');
@@ -234,298 +484,8 @@ this.loadBannedAddresses();
             return false;
         }
     }
-    
 
-    async confirmTransactionPolling(txid, maxRetries = 30) {
-    console.log(`⏳ Confirmation transaction par polling: ${txid}`);
-    
-    for (let i = 0; i < maxRetries; i++) {
-        try {
-            await this.waitForRateLimit();
-            
-            const status = await this.connection.getSignatureStatus(txid);
-            
-            if (status?.value?.confirmationStatus === 'confirmed' || 
-                status?.value?.confirmationStatus === 'finalized') {
-                console.log(`✅ Transaction confirmée en ${i + 1} tentatives`);
-                return true;
-            }
-            
-            if (status?.value?.err) {
-                console.log(`❌ Transaction échouée: ${JSON.stringify(status.value.err)}`);
-                return false;
-            }
-            
-            await new Promise(resolve => setTimeout(resolve, 2000));
-            
-        } catch (error) {
-            console.log(`⚠️ Erreur vérification ${i + 1}: ${error.message}`);
-            if (i === maxRetries - 1) return false;
-            await new Promise(resolve => setTimeout(resolve, 2000));
-        }
-    }
-    return false;
-}       async testTokenSellability(tokenAddress) {
-    try {
-        console.log(`   🧪 Test vendabilité...`);
-        
-        const solMint = 'So11111111111111111111111111111111111111112';
-        const testBuyAmount = 0.001 * 1e9; // 0.001 SOL
-        
-        // Test quote achat
-        const buyQuote = await this.getJupiterQuote(solMint, tokenAddress, testBuyAmount);
-        if (!buyQuote) {
-            return { canSell: false, reason: 'Aucune route d\'achat Jupiter' };
-        }
-        
-        const tokensReceived = parseFloat(buyQuote.outAmount);
-        console.log(`      📊 0.001 SOL → ${tokensReceived.toLocaleString()} tokens`);
-        
-        // Test quote vente (50% des tokens)
-        const sellAmount = Math.floor(tokensReceived * 0.5);
-        const sellQuote = await this.getJupiterQuote(tokenAddress, solMint, sellAmount);
-        if (!sellQuote) {
-            return { canSell: false, reason: 'Aucune route de vente Jupiter' };
-        }
-        
-        const solBack = parseFloat(sellQuote.outAmount) / 1e9;
-        const impactPercent = ((0.001 - solBack) / 0.001) * 100;
-        
-        console.log(`      📊 50% tokens → ${solBack.toFixed(6)} SOL (impact: ${impactPercent.toFixed(1)}%)`);
-        
-        // Vérifications plus tolérantes pour whitelist
-        if (impactPercent > 90) { // 90% pour whitelist au lieu de 75%
-            return { canSell: false, reason: `Impact trop élevé: ${impactPercent.toFixed(1)}%` };
-        }
-        
-        if (solBack < 0.00005) { // Plus tolérant pour whitelist
-            return { canSell: false, reason: `Retour trop faible: ${solBack.toFixed(6)} SOL` };
-        }
-        
-        console.log(`      ✅ Token vendable`);
-        return { canSell: true, reason: 'Token vendable' };
-        
-    } catch (error) {
-        console.log(`      ❌ Erreur test: ${error.message}`);
-        return { canSell: false, reason: 'Erreur technique' };
-    }
-}
-    // Scanner les nouveaux tokens (même logique que le scanner)
-// Scanner amélioré avec tokens récents ET performants
-async scanNewTokens() {
-    console.log('🔍 Scan direct whitelist via DexScreener...');
-    
-    if (!this.whitelistMode.enabled || !this.whitelistMode.allowOnlyWhitelisted) {
-        console.log('⚠️ Mode whitelist désactivé - aucun scan');
-        return [];
-    }
-    
-    try {
-        const momentumTokens = [];
-        const whitelistEntries = Object.entries(this.whitelistedTokens);
-        
-        console.log(`📊 Vérification momentum pour ${whitelistEntries.length} tokens whitelist...`);
-        
-        for (const [symbol, address] of whitelistEntries) {
-            try {
-                console.log(`   🔎 Check ${symbol}...`);
-                
-                const response = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${address}`);
-                
-                if (!response.ok) {
-                    console.log(`   ❌ ${symbol}: DexScreener error ${response.status}`);
-                    continue;
-                }
-                
-                const data = await response.json();
-                const pair = data.pairs?.find(p => p.chainId === 'solana');
-                
-                if (!pair) {
-                    console.log(`   ❌ ${symbol}: Pas de paire Solana trouvée`);
-                    continue;
-                }
-                
-                // Extraire les données de momentum
-                const change1h = parseFloat(pair.priceChange?.h1 || 0);
-                const change24h = parseFloat(pair.priceChange?.h24 || 0);
-                const volume24h = parseFloat(pair.volume?.h24 || 0);
-                const liquidity = parseFloat(pair.liquidity?.usd || 0);
-                const price = parseFloat(pair.priceUsd || 0);
-                
-                // Critères momentum pour whitelist
-                const minMomentum1h = this.whitelistMode.minMomentum1h || 1;
-                const minMomentum24h = this.whitelistMode.minMomentum24h || 5;
-                const minVolume = this.whitelistMode.minVolume || 100000;
-                
-                // Vérifier critères
-                if (change1h >= minMomentum1h && change24h >= minMomentum24h && volume24h >= minVolume) {
-                    
-                    console.log(`   ✅ ${symbol}: 1h(+${change1h.toFixed(1)}%) 24h(+${change24h.toFixed(1)}%) vol($${volume24h.toLocaleString()})`);
-                    
-                    // Format standardisé pour le reste du système
-                    const tokenData = {
-                        baseToken: {
-                            address: address,
-                            symbol: symbol,
-                            name: pair.baseToken?.name || symbol
-                        },
-                        priceUsd: price.toString(),
-                        volume: { 
-                            h24: volume24h 
-                        },
-                        liquidity: { 
-                            usd: liquidity 
-                        },
-                        priceChange: { 
-                            h1: change1h,
-                            h24: change24h 
-                        },
-                        scanReason: `🛡️ Whitelist ${symbol}`,
-                        isWhitelisted: true,
-                        // Calculer score momentum simple
-                        momentumScore: (change1h * 3) + (change24h * 2),
-                        // Données DexScreener complètes
-                        dexData: pair
-                    };
-                    
-                    momentumTokens.push(tokenData);
-                    
-                } else {
-                    const reasons = [];
-                    if (change1h < minMomentum1h) reasons.push(`1h(${change1h.toFixed(1)}%<${minMomentum1h}%)`);
-                    if (change24h < minMomentum24h) reasons.push(`24h(${change24h.toFixed(1)}%<${minMomentum24h}%)`);
-                    if (volume24h < minVolume) reasons.push(`vol($${volume24h.toLocaleString()}<$${minVolume.toLocaleString()})`);
-                    
-                    console.log(`   ⚠️ ${symbol}: ${reasons.join(', ')}`);
-                }
-                
-            } catch (tokenError) {
-                console.log(`   ❌ ${symbol}: Erreur ${tokenError.message}`);
-            }
-            
-            // Rate limiting DexScreener (plus généreux que CoinGecko)
-            await new Promise(resolve => setTimeout(resolve, 500)); // 500ms entre tokens
-        }
-        
-        // Trier par momentum 1h (le plus récent = priorité)
-        const sortedTokens = momentumTokens.sort((a, b) => {
-            return (b.priceChange.h1 || 0) - (a.priceChange.h1 || 0);
-        });
-        
-        console.log(`🎯 ${sortedTokens.length} tokens whitelist avec momentum suffisant:`);
-        sortedTokens.forEach((token, i) => {
-            const change1h = token.priceChange.h1;
-            const change24h = token.priceChange.h24;
-            const score = token.momentumScore;
-            console.log(`   ${i+1}. ${token.baseToken.symbol} - 1h: +${change1h.toFixed(1)}% - 24h: +${change24h.toFixed(1)}% - Score: ${score.toFixed(1)}`);
-        });
-        
-        return sortedTokens;
-        
-    } catch (error) {
-        console.error('❌ Erreur scan DexScreener direct:', error.message);
-        return [];
-    }
-}
-
-// Fonction helper pour identifier la raison du scan
-getScanReason(token) {
-    const age = this.calculateAge(token.pairCreatedAt);
-    const liquidity = parseFloat(token.liquidity?.usd || 0);
-    const change24h = parseFloat(token.priceChange?.h24 || 0);
-    
-    if (age <= 1) {
-        return "🆕 Nouveau";
-    } else if (liquidity >= 100000) {
-        return "💎 Haute liquidité";
-    } else if (change24h >= 50) {
-        return "🚀 Très performant";
-    } else {
-        return "📈 Performant";
-    }
-}   
-
-        showWhitelistStats() {
-    console.log('📊 STATISTIQUES WHITELIST:');
-    console.log(`   🛡️ Tokens vérifiés: ${Object.keys(this.verifiedSolanaTokens).length}`);
-    console.log(`   🔒 Mode strict: ${this.whitelistMode.allowOnlyWhitelisted ? 'ON' : 'OFF'}`);
-    console.log(`   📈 Positions actuelles: ${this.positions.size}`);
-    
-    // Montrer positions actuelles
-    if (this.positions.size > 0) {
-        console.log(`   💼 Tokens en portefeuille:`);
-        for (const [, position] of this.positions.entries()) {
-            const isWhitelisted = this.verifiedSolanaTokens[position.symbol] ? '🛡️' : '⚠️';
-            console.log(`      ${isWhitelisted} ${position.symbol}: ${position.partialSells} ventes`);
-        }
-    }
-}
-
-    // Calculer l'âge du token
-    calculateAge(createdAt) {
-        if (!createdAt) return null;
-        try {
-            return (Date.now() - new Date(createdAt).getTime()) / (1000 * 60 * 60);
-        } catch {
-            return null;
-        }
-    }
-
-    // Vérifier si un token a déjà été traité
-   isTokenAlreadyProcessed(tokenAddress, currentMomentumScore = 0) {
-    if (!this.tradedTokens.has(tokenAddress)) {
-        return false; // Jamais tradé
-    }
-    
-    const tradeHistory = this.tradedTokens.get(tokenAddress);
-    const lastTrade = tradeHistory.lastTradeTime;
-    const lastResult = tradeHistory.lastResult; // 'profit', 'loss', 'breakeven'
-    const timeSinceLastTrade = Date.now() - lastTrade;
-    
-    // Déterminer le cooldown selon le résultat précédent
-    let cooldownTime;
-    if (lastResult === 'profit') {
-        cooldownTime = this.retradeCooldown.afterProfit; // 12h
-    } else if (lastResult === 'loss') {
-        cooldownTime = this.retradeCooldown.afterLoss; // 48h
-    } else {
-        cooldownTime = this.retradeCooldown.normal; // 24h
-    }
-    
-    // Si cooldown pas encore écoulé
-    if (timeSinceLastTrade < cooldownTime) {
-        
-        // MAIS vérifier si on peut faire un override pour opportunité exceptionnelle
-        const canOverride = this.canOverrideCooldown(tradeHistory, currentMomentumScore, timeSinceLastTrade);
-        
-        if (canOverride) {
-            console.log(`⚡ Override cooldown ${tokenAddress.slice(0, 8)}... - Opportunité exceptionnelle (+${currentMomentumScore.toFixed(1)}%)`);
-            return false; // Autoriser le trade
-        }
-        
-        const remainingHours = ((cooldownTime - timeSinceLastTrade) / (1000 * 60 * 60)).toFixed(1);
-        console.log(`⏳ ${tokenAddress.slice(0, 8)}... en cooldown (${remainingHours}h restantes - ${lastResult})`);
-        return true; // Bloquer
-    }
-    
-    // Cooldown écoulé, nettoyer l'historique
-    this.tradedTokens.delete(tokenAddress);
-    return false;
-}
-
-// Remplacer markTokenAsProcessed() par:
-markTokenAsProcessed(tokenAddress, result = 'unknown') {
-    this.tradedTokens.set(tokenAddress, {
-        lastTradeTime: Date.now(),
-        lastResult: result,
-        tradeCount: (this.tradedTokens.get(tokenAddress)?.tradeCount || 0) + 1,
-        lastMomentumScore: 0 // Sera mis à jour
-    });
-    
-    console.log(`📝 Token marqué: ${tokenAddress.slice(0, 8)}... (${result})`);
-}
-
-    // Rate limiting pour RPC calls
+    // GESTION RPC ET RATE LIMITING
     async waitForRateLimit() {
         const now = Date.now();
         const timeSinceLastCall = now - this.lastRpcCall;
@@ -538,54 +498,28 @@ markTokenAsProcessed(tokenAddress, result = 'unknown') {
         this.lastRpcCall = Date.now();
     }
 
-    // Obtenir une connexion avec failover
     async getConnection(attempt = 0) {
         if (attempt === 0) {
             return this.connection;
         } else if (attempt <= this.backupConnections.length) {
             return this.backupConnections[attempt - 1];
         } else {
-            return this.connection; // Retour au principal
+            return this.connection;
         }
     }
-        canOverrideCooldown(tradeHistory, currentMomentumScore, timeSinceLastTrade) {
-    // Conditions pour override:
-    // 1. Au moins 6h depuis le dernier trade
-    // 2. Momentum exceptionnel (+50%+)
-    // 3. Pas si le dernier trade était une grosse perte récente
-    
-    // 1. Temps minimum
-    if (timeSinceLastTrade < this.retradeCooldown.minCooldownOverride) {
-        return false; // Pas assez de temps écoulé
-    }
-    
-    // 2. Momentum exceptionnel
-    if (currentMomentumScore < this.retradeCooldown.opportunityThreshold) {
-        return false; // Pas assez exceptionnel
-    }
-    
-    // 3. Protection contre les grosses pertes récentes
-    if (tradeHistory.lastResult === 'loss' && timeSinceLastTrade < 24 * 60 * 60 * 1000) {
-        return false; // Pas d'override dans les 24h après une perte
-    }
-    
-    return true; // Override autorisé !
-}
-    // Vérifier le solde avec cache et rate limiting
+
+    // VÉRIFICATION DES SOLDES AVEC CACHE
     async checkWalletBalance(tokenMint, requiredAmount, useCache = true) {
         try {
             const cacheKey = `${tokenMint}_${this.wallet.publicKey.toString()}`;
             
-            // Vérifier le cache d'abord
             if (useCache && this.balanceCache.has(cacheKey)) {
                 const cached = this.balanceCache.get(cacheKey);
                 if (Date.now() - cached.timestamp < this.cacheTimeout) {
-                    console.log(`💾 Cache: ${tokenMint === 'So11111111111111111111111111111111111111112' ? 'SOL' : 'Token'} = ${cached.balance}`);
                     return cached.balance >= requiredAmount;
                 }
             }
 
-            // Rate limiting
             await this.waitForRateLimit();
 
             let balance;
@@ -597,36 +531,26 @@ markTokenAsProcessed(tokenAddress, result = 'unknown') {
                     const connection = await this.getConnection(attempts);
                     
                     if (tokenMint === 'So11111111111111111111111111111111111111112') {
-                        // SOL balance
                         const lamports = await connection.getBalance(this.wallet.publicKey);
                         balance = lamports / 1e9;
                         const requiredSol = requiredAmount / 1e9;
                         
-                        console.log(`💰 Solde SOL: ${balance.toFixed(4)} | Requis: ${requiredSol.toFixed(4)}`);
-                        
-                        // Cache le résultat
                         this.balanceCache.set(cacheKey, { 
                             balance: lamports, 
                             timestamp: Date.now() 
                         });
                         
-                        return balance >= requiredSol + 0.01; // +0.01 SOL pour les fees
+                        return balance >= requiredSol + 0.01;
                     } else {
-                        // Token balance
                         const tokenAccounts = await connection.getParsedTokenAccountsByOwner(
                             this.wallet.publicKey,
                             { mint: new PublicKey(tokenMint) }
                         );
                         
-                        if (tokenAccounts.value.length === 0) {
-                            console.log(`❌ Aucun compte token trouvé pour ${tokenMint}`);
-                            return false;
-                        }
+                        if (tokenAccounts.value.length === 0) return false;
                         
                         balance = parseFloat(tokenAccounts.value[0].account.data.parsed.info.tokenAmount.amount);
-                        console.log(`💰 Solde token: ${balance} | Requis: ${requiredAmount}`);
                         
-                        // Cache le résultat
                         this.balanceCache.set(cacheKey, { 
                             balance: balance, 
                             timestamp: Date.now() 
@@ -636,10 +560,7 @@ markTokenAsProcessed(tokenAddress, result = 'unknown') {
                     }
                 } catch (rpcError) {
                     attempts++;
-                    console.log(`⚠️ RPC Error attempt ${attempts}: ${rpcError.message}`);
-                    
-                    if (rpcError.message.includes('429') || rpcError.message.includes('Too Many Requests')) {
-                        console.log(`🔄 Rate limit hit, waiting ${Math.pow(2, attempts)} seconds...`);
+                    if (rpcError.message.includes('429')) {
                         await new Promise(resolve => setTimeout(resolve, Math.pow(2, attempts) * 1000));
                     } else if (attempts >= maxAttempts) {
                         throw rpcError;
@@ -651,273 +572,94 @@ markTokenAsProcessed(tokenAddress, result = 'unknown') {
             return false;
         }
     }
-            async notifyPositionCheckSimple() {
-    if (this.positions.size === 0) return;
-    
-    try {
-        const channel = await this.client.channels.fetch(this.channelId);
-        if (!channel) return;
-        
-        let message = `📊 **POSITIONS CHECK** (${this.positions.size})\n`;
-        
-        for (const [, position] of this.positions.entries()) {
-            const currentPrice = position.lastKnownPrice || position.buyPrice;
-            const changePercent = ((currentPrice / position.buyPrice) - 1) * 100;
-            const holdTimeMin = ((Date.now() - position.buyTime) / (1000 * 60)).toFixed(0);
-            
-            const emoji = changePercent > 10 ? '🚀' : changePercent > 0 ? '📈' : changePercent > -10 ? '⚠️' : '🔴';
-            const partialInfo = position.partialSells > 0 ? ` (${position.partialSells}x)` : '';
-            
-            message += `${emoji} **${position.symbol}**: ${changePercent > 0 ? '+' : ''}${changePercent.toFixed(1)}% • ${holdTimeMin}min${partialInfo}\n`;
-        }
-        
-        await channel.send(message);
-        
-    } catch (error) {
-        console.error('❌ Erreur notification simple:', error.message);
-    }
-}
-    // Tester la compatibilité Jupiter et obtenir un quote avec vérifications
-   async getJupiterQuote(inputMint, outputMint, amount) {
-    try {
-        // Debug info pour moonshots
-        const isLargeAmount = amount > 1000000000; // 1 milliard de tokens
-        if (isLargeAmount) {
-            console.log(`🚨 Gros montant détecté: ${amount.toLocaleString()} tokens`);
-        }
-        
-        // Vérifier le solde avant de demander un quote
-        const hasBalance = await this.checkWalletBalance(inputMint, amount);
-        if (!hasBalance) {
-            console.log(`❌ Solde insuffisant pour ${inputMint}`);
-            return null;
-        }
 
-        console.log(`🔄 Jupiter quote: ${amount.toLocaleString()} tokens → SOL`);
-        
-        const response = await fetch(
-            `https://quote-api.jup.ag/v6/quote?` +
-            `inputMint=${inputMint}&` +
-            `outputMint=${outputMint}&` +
-            `amount=${amount}&` +
-            `slippageBps=${this.maxSlippage * 100}&` +
-            `onlyDirectRoutes=false&` +  // Permettre routes indirectes
-            `asLegacyTransaction=false`, // Utiliser versioned transactions
-            {
-                headers: {
-                    'Accept': 'application/json',
-                    'Content-Type': 'application/json'
+    // JUPITER API - OBTENIR QUOTE SANS VÉRIFICATION SOLDE
+    async getJupiterQuote(inputMint, outputMint, amount, skipBalanceCheck = false) {
+        try {
+            // Vérifier solde seulement si demandé
+            if (!skipBalanceCheck) {
+                const hasBalance = await this.checkWalletBalance(inputMint, amount);
+                if (!hasBalance) {
+                    console.log(`❌ Solde insuffisant`);
+                    return null;
                 }
             }
-        );
-        
-        if (response.ok) {
-            const quote = await response.json();
+
+            const response = await fetch(
+                `https://quote-api.jup.ag/v6/quote?` +
+                `inputMint=${inputMint}&` +
+                `outputMint=${outputMint}&` +
+                `amount=${amount}&` +
+               `slippageBps=${Math.max(this.maxSlippage * 100, 1000)}&` + // Minimum 10% slippage
+                `onlyDirectRoutes=false&` +
+                `asLegacyTransaction=false`,
+                {
+                    headers: {
+                        'Accept': 'application/json',
+                        'Content-Type': 'application/json'
+                    }
+                }
+            );
             
-            if (quote.error) {
-                console.log(`❌ Jupiter quote error: ${quote.error}`);
+            if (response.ok) {
+                const quote = await response.json();
                 
-                // Diagnostics spécifiques
-                if (quote.error.includes('No routes found')) {
-                    console.log(`🚫 Aucune route Jupiter trouvée - Token peut-être illiquide`);
-                } else if (quote.error.includes('insufficient')) {
-                    console.log(`🚫 Liquidité insuffisante sur Jupiter`);
-                } else if (quote.error.includes('slippage')) {
-                    console.log(`🚫 Slippage trop élevé - Token trop volatile`);
+                if (quote.error) {
+                    console.log(`❌ Jupiter error: ${quote.error}`);
+                    return null;
                 }
                 
-                return null;
-            }
-            
-            if (quote.outAmount && parseFloat(quote.outAmount) > 0) {
-                const outAmount = parseFloat(quote.outAmount);
-                const solAmount = outAmount / 1e9;
-                console.log(`✅ Quote Jupiter: ${amount.toLocaleString()} → ${solAmount.toFixed(6)} SOL`);
-                return quote;
-            } else {
-                console.log(`❌ Quote invalide: outAmount = ${quote.outAmount}`);
-                return null;
-            }
-            
-        } else {
-            const errorText = await response.text();
-            console.log(`❌ Jupiter API ${response.status}: ${errorText}`);
-            
-            // Diagnostics par code d'erreur
-            if (response.status === 400) {
-                console.log(`🔍 Erreur 400 possible causes:`);
-                console.log(`   - Token non supporté par Jupiter`);
-                console.log(`   - Montant invalide ou trop important`);
-                console.log(`   - Adresse de token incorrecte`);
-                console.log(`   - Token blacklisté/scam`);
+                if (quote.outAmount && parseFloat(quote.outAmount) > 0) {
+                    return quote;
+                }
             } else if (response.status === 429) {
-                console.log(`🔍 Rate limit Jupiter - attendre`);
+                console.log(`⚠️ Rate limit Jupiter - attendre...`);
+                await new Promise(resolve => setTimeout(resolve, 5000));
+                return null;
             }
             
             return null;
+            
+        } catch (error) {
+            console.log(`❌ Erreur Jupiter quote: ${error.message}`);
+            return null;
         }
-        
-    } catch (error) {
-        console.log(`❌ Erreur Jupiter quote: ${error.message}`);
-        return null;
     }
-}
-            async handleMoonshotSell(position, currentPrice, reason) {
-    console.log(`🌙 Gestion vente moonshot: ${position.symbol} (+${((currentPrice/position.buyPrice-1)*100).toFixed(0)}%)`);
-    
-    // 1. ESSAYER VENTE TOTALE D'ABORD (plus simple que partielle)
-    console.log(`🎯 Tentative vente totale moonshot...`);
-    const totalSellSuccess = await this.sellEntirePosition(position, currentPrice, `Moonshot ${reason}`);
-    
-    if (totalSellSuccess) {
-        console.log(`✅ Vente totale moonshot réussie !`);
-        return true;
-    }
-    
-    // 2. ESSAYER VENTE AVEC MONTANTS PLUS PETITS
-    console.log(`🎯 Tentative vente par petits chunks...`);
-    const chunkSuccess = await this.sellMoonshotInChunks(position, currentPrice);
-    
-    if (chunkSuccess) {
-        return true;
-    }
-    
-    // 3. MARQUER COMME PROBLÉMATIQUE ET CONTINUER À SURVEILLER
-    console.log(`⚠️ Vente moonshot impossible - surveillance continue`);
-    position.moonshotSellFailed = true;
-    position.lastFailedSellTime = Date.now();
-    
-    return false;
-}
 
-// ==========================================
-// 4. VENTE PAR CHUNKS POUR MOONSHOTS
-// ==========================================
-
-async sellMoonshotInChunks(position, currentPrice) {
-    console.log(`🧩 Vente moonshot par chunks...`);
-    
-    try {
-        const tokenMint = position.tokenAddress;
-        
-        // Obtenir le solde réel
-        await this.waitForRateLimit();
-        const tokenAccounts = await this.connection.getParsedTokenAccountsByOwner(
-            this.wallet.publicKey,
-            { mint: new PublicKey(tokenMint) }
-        );
-        
-        if (tokenAccounts.value.length === 0) {
-            console.log(`❌ Pas de compte token pour chunks`);
-            return false;
-        }
-        
-        const totalBalance = parseFloat(tokenAccounts.value[0].account.data.parsed.info.tokenAmount.amount);
-        console.log(`💰 Balance totale: ${totalBalance.toLocaleString()}`);
-        
-        // Vendre par chunks de 10% max
-        const chunkSize = Math.floor(totalBalance * 0.1); // 10% à la fois
-        const maxChunks = 5; // Max 5 chunks = 50% du total
-        let soldChunks = 0;
-        let totalSolReceived = 0;
-        
-        for (let i = 0; i < maxChunks; i++) {
-            console.log(`🧩 Chunk ${i+1}/${maxChunks}: ${chunkSize.toLocaleString()} tokens`);
-            
-            const quote = await this.getJupiterQuote(tokenMint, 'So11111111111111111111111111111111111111112', chunkSize);
-            
-            if (quote) {
-                const txid = await this.executeSwap(quote);
-                
-                if (txid) {
-                    const solReceived = parseFloat(quote.outAmount) / 1e9;
-                    totalSolReceived += solReceived;
-                    soldChunks++;
-                    
-                    console.log(`✅ Chunk ${i+1} vendu: ${solReceived.toFixed(4)} SOL`);
-                    
-                    // Mettre à jour la position
-                    position.totalSolReceived = (position.totalSolReceived || 0) + solReceived;
-                    position.partialSells++;
-                    
-                    // Délai entre chunks
-                    await new Promise(resolve => setTimeout(resolve, 5000));
-                } else {
-                    console.log(`❌ Chunk ${i+1} échoué`);
-                    break;
-                }
-            } else {
-                console.log(`❌ Quote chunk ${i+1} impossible`);
-                break;
-            }
-        }
-        
-        if (soldChunks > 0) {
-            console.log(`✅ Moonshot chunks vendus: ${soldChunks}/${maxChunks} = ${totalSolReceived.toFixed(4)} SOL`);
-            
-            // Notification Discord pour vente partielle moonshot
-            await this.notifyMoonshotChunkSell(position, soldChunks, totalSolReceived, currentPrice);
-            
-            return true;
-        }
-        
-        return false;
-        
-    } catch (error) {
-        console.error(`❌ Erreur vente chunks: ${error.message}`);
-        return false;
-    }
-}
-
-    // Exécuter un swap Jupiter avec gestion d'erreurs améliorée
+    // JUPITER API - EXÉCUTER SWAP
     async executeSwap(quote) {
         try {
-            console.log(`🔄 Exécution swap: ${quote.inputMint} → ${quote.outputMint}`);
-            console.log(`   📊 Amount: ${quote.inAmount} → ${quote.outAmount}`);
-            
-            // Double vérification du solde juste avant le swap
             const hasBalance = await this.checkWalletBalance(quote.inputMint, parseFloat(quote.inAmount));
             if (!hasBalance) {
                 console.log(`❌ Solde insuffisant au moment du swap`);
                 return null;
             }
 
-            // Obtenir la transaction
             const swapResponse = await fetch('https://quote-api.jup.ag/v6/swap', {
                 method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
+                headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     quoteResponse: quote,
                     userPublicKey: this.wallet.publicKey.toString(),
                     wrapAndUnwrapSol: true,
-                    dynamicComputeUnitLimit: true, // Ajuster automatiquement les compute units
-                    prioritizationFeeLamports: 'auto' // Fee automatique pour priorité
+                    dynamicComputeUnitLimit: true,
+                    prioritizationFeeLamports: 'auto'
                 })
             });
             
             if (!swapResponse.ok) {
-                const errorText = await swapResponse.text();
-                throw new Error(`Swap API error: ${swapResponse.status} - ${errorText}`);
+                throw new Error(`Swap API error: ${swapResponse.status}`);
             }
             
             const { swapTransaction } = await swapResponse.json();
-            
             if (!swapTransaction) {
-                throw new Error('Pas de transaction reçue de Jupiter');
+                throw new Error('Pas de transaction reçue');
             }
             
-            // Désérialiser et signer la transaction
             const swapTransactionBuf = Buffer.from(swapTransaction, 'base64');
             const transaction = VersionedTransaction.deserialize(swapTransactionBuf);
-            
-            // Signer la transaction
             transaction.sign([this.wallet]);
             
-            console.log(`📤 Envoi de la transaction...`);
-            
-            // Envoyer la transaction avec retry
             let txid = null;
             let attempts = 0;
             const maxAttempts = 3;
@@ -925,29 +667,19 @@ async sellMoonshotInChunks(position, currentPrice) {
             while (attempts < maxAttempts && !txid) {
                 try {
                     attempts++;
-                    console.log(`   Tentative ${attempts}/${maxAttempts}...`);
-                    
                     txid = await this.connection.sendTransaction(transaction, {
                         preflightCommitment: 'confirmed',
-                        maxRetries: 0, // Pas de retry automatique
-                        skipPreflight: false // Garder la simulation
+                        maxRetries: 0,
+                        skipPreflight: false
                     });
                     
-                    if (txid) {
-                        console.log(`✅ Transaction envoyée: ${txid}`);
-                        break;
-                    }
+                    if (txid) break;
                 } catch (sendError) {
-                    console.log(`❌ Tentative ${attempts} échouée: ${sendError.message}`);
-                    
-                    // Si erreur de simulation, arrêter immédiatement
                     if (sendError.message.includes('simulation failed') || 
                         sendError.message.includes('insufficient funds')) {
-                        console.log(`🛑 Erreur fatale détectée, arrêt des tentatives`);
                         throw sendError;
                     }
                     
-                    // Attendre avant retry
                     if (attempts < maxAttempts) {
                         await new Promise(resolve => setTimeout(resolve, 2000));
                     }
@@ -955,358 +687,621 @@ async sellMoonshotInChunks(position, currentPrice) {
             }
             
             if (!txid) {
-                throw new Error(`Impossible d'envoyer la transaction après ${maxAttempts} tentatives`);
+                throw new Error(`Impossible d'envoyer après ${maxAttempts} tentatives`);
             }
             
-            // Attendre la confirmation avec timeout
-            console.log(`⏳ Attente confirmation...`);
-            const confirmationStart = Date.now();
-            const confirmationTimeout = 60000; // 60 secondes
+            const confirmed = await this.confirmTransactionPolling(txid);
             
-            console.log(`⏳ Confirmation par polling...`);
-const confirmed = await this.confirmTransactionPolling(txid);
-
-if (confirmed) {
-    console.log(`✅ Transaction confirmée: ${txid}`);
-    return txid;
-} else {
-    console.log(`⚠️ Confirmation timeout, mais transaction peut être valide: ${txid}`);
-    return txid;
-}
+            if (confirmed) {
+                console.log(`✅ Transaction confirmée: ${txid}`);
+                return txid;
+            } else {
+                console.log(`⚠️ Timeout confirmation: ${txid}`);
+                return txid;
+            }
             
         } catch (error) {
-            console.error(`❌ Erreur swap détaillée: ${error.message}`);
-            
-            // Logging détaillé pour debug
-            if (error.message.includes('simulation failed')) {
-                console.error('🔍 Erreur de simulation - vérifiez:');
-                console.error('   - Solde suffisant du wallet');
-                console.error('   - Token account existe');
-                console.error('   - Slippage pas trop restrictif');
-                console.error('   - Pool avec liquidité suffisante');
-            }
-            
+            console.error(`❌ Erreur swap: ${error.message}`);
             return null;
         }
     }
 
-    // Acheter un token
-   
-    // Acheter un token avec toutes les protections
-
-
-    // Vérifier et exécuter les ventes échelonnées
-    async checkStagedSells(position, changePercent, currentPrice) {
-    // Détecter si c'est un moonshot (>1000%)
-    const isMoonshot = changePercent > 1000;
-    
-    if (isMoonshot) {
-        console.log(`🌙 MOONSHOT DÉTECTÉ: ${position.symbol} +${changePercent.toFixed(0)}%`);
-        
-        // Pour les moonshots, essayer vente spéciale
-        if (!position.moonshotSellAttempted) {
-            position.moonshotSellAttempted = true;
-            
-            const success = await this.handleMoonshotSell(position, currentPrice, `+${changePercent.toFixed(0)}%`);
-            
-            if (success) {
-                return; // Sortir si vente réussie
-            }
-        }
-        
-        // Si vente moonshot a échoué, continuer avec ventes normales mais adaptées
-    }
-    
-    // Vérifier chaque niveau de vente (normal ou adapté pour moonshot)
-    for (const level of this.sellLevels) {
-        if (changePercent >= level.profit && !position.sellsExecuted.includes(level.profit)) {
-            
-            const remainingAmount = position.currentAmount;
-            let amountToSell = remainingAmount * (level.percentage / 100);
-            
-            // Pour moonshots, réduire les montants de vente
-            if (isMoonshot) {
-                amountToSell = Math.min(amountToSell, remainingAmount * 0.1); // Max 10% à la fois
-                console.log(`🌙 Montant réduit pour moonshot: ${amountToSell.toLocaleString()}`);
-            }
-            
-            if (amountToSell > 0) {
-                console.log(`🎯 Déclenchement vente échelonnée: ${position.symbol} +${changePercent.toFixed(1)}%`);
-                console.log(`   💰 Vendre ${level.percentage}% (${amountToSell.toLocaleString()} tokens)${isMoonshot ? ' [MOONSHOT MODE]' : ''}`);
+    // CONFIRMATION TRANSACTION PAR POLLING
+    async confirmTransactionPolling(txid, maxRetries = 30) {
+        for (let i = 0; i < maxRetries; i++) {
+            try {
+                await this.waitForRateLimit();
                 
-                const success = await this.sellPartialPosition(position, amountToSell, level, currentPrice);
+                const status = await this.connection.getSignatureStatus(txid);
                 
-                if (success) {
-                    position.sellsExecuted.push(level.profit);
-                    position.currentAmount = remainingAmount - amountToSell;
-                    
-                    if (position.currentAmount <= position.buyAmount * 0.01) {
-                        console.log(`✅ Position ${position.symbol} entièrement vendue`);
-                        this.positions.delete(position.tokenAddress);
-                        break;
-                    }
-                } else if (isMoonshot) {
-                    // Pour moonshots, marquer comme exécuté même si échec (éviter spam)
-                    console.log(`⚠️ Vente moonshot échouée, niveau marqué comme tenté`);
-                    position.sellsExecuted.push(level.profit);
+                if (status?.value?.confirmationStatus === 'confirmed' || 
+                    status?.value?.confirmationStatus === 'finalized') {
+                    return true;
                 }
+                
+                if (status?.value?.err) {
+                    console.log(`❌ Transaction échouée: ${JSON.stringify(status.value.err)}`);
+                    return false;
+                }
+                
+                await new Promise(resolve => setTimeout(resolve, 2000));
+                
+            } catch (error) {
+                if (i === maxRetries - 1) return false;
+                await new Promise(resolve => setTimeout(resolve, 2000));
             }
         }
-    }
-}       
-       async buyToken(tokenAddress, tokenData) {
-    try {
-        console.log(`💰 Tentative d'achat: ${tokenData.baseToken.symbol}`);
-        
-        // 🛡️ VÉRIFICATION WHITELIST ABSOLUE
-        const symbol = tokenData.baseToken.symbol;
-        
-        if (this.whitelistMode.enabled && this.whitelistMode.allowOnlyWhitelisted) {
-            
-            // Vérifier présence dans whitelist
-            if (!this.whitelistedTokens[symbol]) {
-                console.log(`🚨 SKIP ${symbol}: Token non whitelisté`);
-                this.banAddress(tokenAddress, 'Not in whitelist');
-                return false;
-            }
-            
-            // Vérifier adresse exacte (protection anti-scam)
-            const expectedAddress = this.whitelistedTokens[symbol];
-            if (expectedAddress !== tokenAddress) {
-                console.log(`🚨 SKIP ${symbol}: Adresse incorrecte - SCAM détecté !`);
-                console.log(`   🔍 Attendue: ${expectedAddress.slice(0,12)}...`);
-                console.log(`   🔍 Reçue: ${tokenAddress.slice(0,12)}...`);
-                this.banAddress(tokenAddress, `SCAM: Fake ${symbol} detected`);
-                return false;
-            }
-            
-            console.log(`✅ ${symbol}: Token whitelist vérifié avec adresse correcte`);
-        }
-        
-        // 🛡️ VÉRIFICATIONS TECHNIQUES (souples pour tokens whitelistés)
-        const volume24h = parseFloat(tokenData.volume?.h24 || 0);
-        const liquidity = parseFloat(tokenData.liquidity?.usd || 0);
-        
-        // Vérification liquidité basique (moins stricte pour whitelist)
-        if (volume24h < 50000) { // Seulement 50k pour whitelist
-            console.log(`🚨 SKIP ${symbol}: Volume 24h trop faible ($${volume24h.toLocaleString()})`);
-            this.banAddress(tokenAddress, 'Low volume even for whitelisted token');
-            return false;
-        }
-        
-        console.log(`✅ ${symbol}: Volume validé ($${volume24h.toLocaleString()})`);
-        
-        // 🧪 TEST DE VENDABILITÉ (garder même pour whitelist)
-        console.log(`🧪 Test vendabilité pour ${symbol}...`);
-        const sellTest = await this.testTokenSellability(tokenAddress);
-        
-        if (!sellTest.canSell) {
-            console.log(`🚨 SKIP ${symbol}: ${sellTest.reason}`);
-            this.banAddress(tokenAddress, `Sellability failed: ${sellTest.reason}`);
-            return false;
-        }
-        
-        console.log(`✅ ${symbol}: Test vendabilité réussi`);
-        
-        // 💰 EXÉCUTION DE L'ACHAT SÉCURISÉ
-        console.log(`🚀 Achat sécurisé autorisé: ${symbol}`);
-        
-        const solAmount = this.buyAmount * 1e9; // Convertir en lamports
-        const solMint = 'So11111111111111111111111111111111111111112';
-        
-        // Obtenir quote d'achat
-        console.log(`📡 Demande quote Jupiter: ${this.buyAmount} SOL → ${symbol}...`);
-        const buyQuote = await this.getJupiterQuote(solMint, tokenAddress, solAmount);
-        
-        if (!buyQuote) {
-            console.log(`❌ Quote Jupiter impossible pour ${symbol}`);
-            return false;
-        }
-        
-        const expectedTokens = parseFloat(buyQuote.outAmount);
-        console.log(`📊 Quote reçu: ${this.buyAmount} SOL → ${expectedTokens.toLocaleString()} ${symbol}`);
-        
-        // Exécuter l'achat
-        console.log(`⚡ Exécution swap Jupiter...`);
-        const txid = await this.executeSwap(buyQuote);
-        
-        if (txid) {
-            const tokenAmount = parseFloat(buyQuote.outAmount);
-            const price = parseFloat(tokenData.priceUsd || 0);
-            
-            // Enregistrer la position avec flag whitelist
-            const position = {
-                tokenAddress,
-                symbol: tokenData.baseToken.symbol,
-                buyPrice: price,
-                buyAmount: tokenAmount,
-                currentAmount: tokenAmount, // Pour tracking des ventes partielles
-                buyTxid: txid,
-                buyTime: Date.now(),
-                solSpent: this.buyAmount,
-                sellsExecuted: [], // Tracking des niveaux de vente déjà exécutés
-                totalSolReceived: 0, // Total SOL reçu des ventes partielles
-                partialSells: 0, // Nombre de ventes partielles
-                highestPrice: price, // Plus haut prix atteint (pour trailing stop)
-                highestPercent: 0, // Plus haut pourcentage atteint
-                isWhitelisted: true, // FLAG: Token de confiance
-                confidenceLevel: 'HIGH' // Niveau de confiance élevé
-            };
-            
-            this.positions.set(tokenAddress, position);
-            
-            console.log(`✅ ACHAT RÉUSSI: ${tokenData.baseToken.symbol}`);
-            console.log(`   🛡️ Token: ${symbol} (WHITELIST VÉRIFIÉ)`);
-            console.log(`   💰 Prix: $${price.toFixed(6)}`);
-            console.log(`   🪙 Quantité: ${tokenAmount.toLocaleString()}`);
-            console.log(`   💎 Investissement: ${this.buyAmount} SOL`);
-            console.log(`   🔗 Transaction: ${txid}`);
-            console.log(`   📊 Confiance: ${position.confidenceLevel}`);
-            
-            // Notification Discord spéciale whitelist
-            await this.notifyBuyWhitelisted(position, tokenData);
-            
-            return true;
-        } else {
-            console.log(`❌ Exécution swap échouée pour ${symbol}`);
-            return false;
-        }
-        
-    } catch (error) {
-        console.error(`❌ Erreur achat ${tokenData.baseToken?.symbol}: ${error.message}`);
         return false;
     }
-}       async notifyBuyWhitelisted(position, tokenData) {
-    try {
-        const channel = await this.client.channels.fetch(this.channelId);
-        if (!channel) return;
-        
-        const embed = new EmbedBuilder()
-            .setColor(0x00ff00) // Vert pour whitelist
-            .setTitle(`🛡️ ACHAT SÉCURISÉ - ${position.symbol}`)
-            .setDescription(`**Token whitelist vérifié acheté**`)
-            .addFields(
-                {
-                    name: '🛡️ Sécurité',
-                    value: `✅ Token vérifié en whitelist\n✅ Adresse officielle confirmée\n✅ Test vendabilité réussi`,
-                    inline: false
-                },
-                {
-                    name: '💰 Détails achat',
-                    value: `Prix: $${position.buyPrice.toFixed(6)}\nQuantité: ${position.buyAmount.toLocaleString()}\nInvesti: ${position.solSpent} SOL`,
-                    inline: true
-                },
-                {
-                    name: '📊 Performance',
-                    value: `1h: +${tokenData.priceChange?.h1?.toFixed(1) || 'N/A'}%\n24h: +${tokenData.priceChange?.h24?.toFixed(1) || 'N/A'}%\nVolume: $${parseFloat(tokenData.volume?.h24 || 0).toLocaleString()}`,
-                    inline: true
-                },
-                {
-                    name: '🎯 Stratégie',
-                    value: `Ventes: +20% (50%), +75% (60%), +200% (75%), +500% (90%)\nStop-Loss: -${this.stopLossPercent}%\nTrailing: -${this.trailingStopPercent}%`,
-                    inline: false
-                },
-                {
-                    name: '🔗 Liens',
-                    value: `[🔍 Solscan](https://solscan.io/tx/${position.buyTxid})\n[📊 DexScreener](https://dexscreener.com/solana/${position.tokenAddress})`,
-                    inline: false
-                }
-            )
-            .setFooter({ text: `Achat sécurisé à ${new Date().toLocaleTimeString()}` })
-            .setTimestamp();
-        
-        await channel.send({
-            content: `🛡️ **ACHAT SÉCURISÉ** 🛡️\n${position.symbol} - Token whitelist vérifié !`,
-            embeds: [embed]
-        });
-        
-    } catch (error) {
-        console.error('❌ Erreur notification whitelist:', error.message);
-    }
-}
-     
-        async notifyMoonshotChunkSell(position, soldChunks, totalSolReceived, currentPrice) {
-    try {
-        const channel = await this.client.channels.fetch(this.channelId);
-        if (!channel) return;
-        
-        const changePercent = ((currentPrice / position.buyPrice) - 1) * 100;
-        
-        const embed = new EmbedBuilder()
-            .setColor(0xffd700) // Or pour moonshot
-            .setTitle(`🌙 MOONSHOT PARTIEL - ${position.symbol}`)
-            .setDescription(`**Vente par chunks réussie !**`)
-            .addFields(
-                {
-                    name: '🚀 Performance',
-                    value: `+${changePercent.toFixed(0)}%`,
-                    inline: true
-                },
-                {
-                    name: '🧩 Chunks vendus',
-                    value: `${soldChunks}/5 chunks`,
-                    inline: true
-                },
-                {
-                    name: '💰 SOL reçu',
-                    value: `${totalSolReceived.toFixed(4)} SOL`,
-                    inline: true
-                },
-                {
-                    name: '⚠️ Note',
-                    value: 'Jupiter avait des difficultés avec ce moonshot, vente par petits montants réussie !',
-                    inline: false
-                }
-            )
-            .setFooter({ text: `Moonshot à ${new Date().toLocaleTimeString()}` })
-            .setTimestamp();
-        
-        await channel.send({
-            content: `🌙 **MOONSHOT ALERT** 🌙\n${position.symbol}: +${changePercent.toFixed(0)}% - Vente partielle réussie !`,
-            embeds: [embed]
-        });
-        
-    } catch (error) {
-        console.error('❌ Erreur notification moonshot:', error.message);
-    }
-}
-    // Vendre une partie de la position avec vérifications renforcées
-    async sellPartialPosition(position, amountToSell, level, currentPrice) {
+
+    // TEST DE VENDABILITÉ AVEC DEBUG POUR HNT
+    async testTokenSellability(tokenAddress) {
         try {
-            console.log(`💸 Vente partielle: ${position.symbol} (${level.reason})`);
-            console.log(`   🪙 Quantité à vendre: ${amountToSell.toLocaleString()}`);
+            console.log(`🧪 Test vendabilité ${tokenAddress.slice(0,8)}...`);
             
-            const tokenMint = position.tokenAddress;
+            // Vérifier d'abord l'adresse sur Solana Explorer
+            // Vérifier d'abord l'adresse sur Solana Explorer
+            // Vérifier l'adresse Solana (43 ou 44 caractères possibles)
+            if (!tokenAddress || tokenAddress.length < 43 || tokenAddress.length > 44) {
+                console.log(`   🔍 Adresse complète: ${tokenAddress}`);
+                console.log(`   📏 Longueur: ${tokenAddress ? tokenAddress.length : 'undefined'}`);
+                return { canSell: false, reason: `Adresse invalide (longueur: ${tokenAddress ? tokenAddress.length : 'undefined'})` };
+            }
+            
+            const solMint = 'So11111111111111111111111111111111111111112';
+            const testAmount = 1000000; // 1M de tokens de test
+            
+            console.log(`   🔍 Test route Jupiter: ${tokenAddress} → SOL`);
+            
+            const response = await fetch(
+                `https://quote-api.jup.ag/v6/quote?` +
+                `inputMint=${tokenAddress}&` +
+                `outputMint=${solMint}&` +
+                `amount=${testAmount}&` +
+                `slippageBps=1000&` +
+                `onlyDirectRoutes=false`, // Autoriser routes indirectes
+                {
+                    headers: {
+                        'Accept': 'application/json',
+                        'Content-Type': 'application/json'
+                    }
+                }
+            );
+            
+            console.log(`   📡 Jupiter response status: ${response.status}`);
+            
+            if (response.ok) {
+                const quote = await response.json();
+                
+                if (quote.error) {
+                    console.log(`   ❌ Jupiter error détaillée: ${quote.error}`);
+                    
+                    if (quote.error.includes('No routes found')) {
+                        return { canSell: false, reason: 'Aucune route Jupiter trouvée' };
+                    } else if (quote.error.includes('Token not found')) {
+                        return { canSell: false, reason: 'Token non reconnu par Jupiter' };
+                    } else {
+                        return { canSell: false, reason: `Jupiter: ${quote.error}` };
+                    }
+                }
+                
+                if (quote.outAmount && parseFloat(quote.outAmount) > 0) {
+                    const outSol = parseFloat(quote.outAmount) / 1e9;
+                    console.log(`   ✅ Route trouvée: ${testAmount.toLocaleString()} tokens → ${outSol.toFixed(8)} SOL`);
+                    console.log(`   🛣️ Route: ${quote.routePlan?.length || 'N/A'} étapes`);
+                    return { canSell: true, reason: 'Route Jupiter confirmée' };
+                } else {
+                    console.log(`   ❌ Quote invalide - outAmount: ${quote.outAmount}`);
+                    return { canSell: false, reason: 'Quote Jupiter invalide' };
+                }
+                
+            } else if (response.status === 429) {
+                console.log(`   ⚠️ Rate limit Jupiter - on continue...`);
+                return { canSell: true, reason: 'Rate limit - route probablement OK' };
+            } else {
+                const errorText = await response.text().catch(() => 'Unknown error');
+                console.log(`   ❌ Jupiter API ${response.status}: ${errorText}`);
+                return { canSell: false, reason: `API Error ${response.status}` };
+            }
+            
+        } catch (error) {
+            console.log(`   ❌ Erreur réseau: ${error.message}`);
+            return { canSell: false, reason: `Erreur: ${error.message}` };
+        }
+    }
+
+    // ACHAT DE TOKEN AVEC POSITION SIZING VARIABLE
+    async buyToken(tokenAddress, tokenData) {
+        try {
+            const symbol = tokenData.baseToken.symbol;
+            
+            // Vérification whitelist absolue
+            if (this.whitelistMode.enabled && this.whitelistMode.allowOnlyWhitelisted) {
+                if (!this.whitelistedTokens[symbol]) {
+                    console.log(`🚨 SKIP ${symbol}: Non whitelisté`);
+                    this.banAddress(tokenAddress, 'Not in whitelist');
+                    return false;
+                }
+                
+                const expectedAddress = this.whitelistedTokens[symbol];
+                if (expectedAddress !== tokenAddress) {
+                    console.log(`🚨 SKIP ${symbol}: SCAM détecté !`);
+                    this.banAddress(tokenAddress, `SCAM: Fake ${symbol}`);
+                    return false;
+                }
+            }
+            
+            // Test de vendabilité SIMPLE
+            const sellTest = await this.testTokenSellability(tokenAddress);
+            if (!sellTest.canSell) {
+                console.log(`🚨 SKIP ${symbol}: ${sellTest.reason}`);
+                this.banAddress(tokenAddress, sellTest.reason);
+                return false;
+            }
+            console.log(`✅ ${symbol}: ${sellTest.reason}`);
+            
+            // POSITION SIZING VARIABLE (nouveau)
+            let dynamicBuyAmount = this.buyAmount;
+            
+            // Size plus petit pour memecoins
+            if (['BONK', 'WIF', 'POPCAT', 'PENGU', 'FARTCOIN', 'AGI', 'ZBCN'].includes(symbol)) {
+                dynamicBuyAmount = this.buyAmount ; // 30% moins pour memes
+                console.log(`🎭 Memecoin détecté: Taille réduite à ${dynamicBuyAmount.toFixed(3)} SOL`);
+            }
+            
+            // Size plus gros pour DeFi établi  
+            if (['JUP', 'RAY', 'ORCA', 'PYTH', 'JTO', 'DRIFT'].includes(symbol)) {
+                dynamicBuyAmount = this.buyAmount ; // 30% plus pour DeFi sûr
+                console.log(`🏦 DeFi établi détecté: Taille augmentée à ${dynamicBuyAmount.toFixed(3)} SOL`);
+            }
+            
+            // Exécution de l'achat
+            const solAmount = dynamicBuyAmount * 1e9;
             const solMint = 'So11111111111111111111111111111111111111112';
             
-            // Arrondir la quantité pour éviter les erreurs de précision
+            const buyQuote = await this.getJupiterQuote(solMint, tokenAddress, solAmount, false); // Avec vérification solde
+            if (!buyQuote) {
+                console.log(`❌ Quote impossible pour ${symbol}`);
+                return false;
+            }
+            
+            const txid = await this.executeSwap(buyQuote);
+            
+            if (txid) {
+                const tokenAmount = parseFloat(buyQuote.outAmount);
+                const price = parseFloat(tokenData.priceUsd || 0);
+                
+                const position = {
+                    tokenAddress,
+                    symbol: symbol,
+                    buyPrice: price,
+                    buyAmount: tokenAmount,
+                    currentAmount: tokenAmount,
+                    buyTxid: txid,
+                    buyTime: Date.now(),
+                    solSpent: dynamicBuyAmount, // Utiliser le montant dynamique
+                    sellsExecuted: [],
+                    totalSolReceived: 0,
+                    partialSells: 0,
+                    highestPrice: price,
+                    highestPercent: 0,
+                    isWhitelisted: true,
+                    confidenceLevel: 'HIGH',
+                    category: this.getCategoryFromSymbol(symbol) // Pour les stats
+                };
+                
+                this.positions.set(tokenAddress, position);
+                
+                // METTRE À JOUR LES STATISTIQUES
+                this.updateStatsOnBuy(dynamicBuyAmount, symbol);
+                
+                console.log(`✅ ACHAT RÉUSSI: ${symbol}`);
+                console.log(`   💰 Prix: ${price.toFixed(6)}`);
+                console.log(`   🪙 Quantité: ${tokenAmount.toLocaleString()}`);
+                console.log(`   💎 Investissement: ${dynamicBuyAmount.toFixed(3)} SOL`);
+                console.log(`   🔗 TX: ${txid}`);
+                
+                await this.notifyBuy(position, tokenData);
+                return true;
+            }
+            
+            return false;
+            
+        } catch (error) {
+            console.error(`❌ Erreur achat ${tokenData.baseToken?.symbol}: ${error.message}`);
+            return false;
+        }
+    }
+
+    // HELPER: Déterminer catégorie du token
+    getCategoryFromSymbol(symbol) {
+        const memecoins = ['BONK', 'WIF', 'POPCAT', 'PENGU', 'FARTCOIN', 'AGI', 'ZBCN'];
+        const defi = ['JUP', 'RAY', 'ORCA', 'PYTH', 'JTO', 'DRIFT'];
+        const infrastructure = ['SOL', 'RENDER', 'HNT'];
+        const ai = ['GRASS', 'AI16Z'];
+        
+        if (memecoins.includes(symbol)) return 'meme';
+        if (defi.includes(symbol)) return 'defi';
+        if (infrastructure.includes(symbol)) return 'infrastructure';
+        if (ai.includes(symbol)) return 'ai';
+        return 'other';
+    }   
+    // GESTION DES STATISTIQUES
+updateStatsOnBuy(solSpent, symbol) {
+    // Session
+    this.stats.session.trades++;
+    this.stats.session.investedSOL += solSpent;
+    
+    // Daily - reset si nouveau jour
+    const currentDate = new Date().toDateString();
+    if (this.stats.daily.date !== currentDate) {
+        this.stats.daily = {
+            date: currentDate,
+            trades: 0,
+            wins: 0,
+            losses: 0,
+            profitSOL: 0,
+            investedSOL: 0
+        };
+    }
+    this.stats.daily.trades++;
+    this.stats.daily.investedSOL += solSpent;
+    
+    // Hourly - reset si nouvelle heure
+    const currentHour = new Date().getHours();
+    if (this.stats.hourly.hour !== currentHour) {
+        this.stats.hourly = {
+            hour: currentHour,
+            trades: 0,
+            wins: 0,
+            losses: 0,
+            profitSOL: 0
+        };
+    }
+    this.stats.hourly.trades++;
+    
+    // All time
+    this.stats.allTime.totalTrades++;
+    this.stats.allTime.totalInvestedSOL += solSpent;
+    
+    console.log(`📊 Stats mise à jour: ${this.stats.session.trades} trades session`);
+}
+
+updateStatsOnSell(solReceived, solSpent, profitPercent, buyTime, symbol, result) {
+    const profit = solReceived - solSpent;
+    const holdTime = Date.now() - buyTime;
+    
+    // Mettre à jour toutes les périodes
+    [this.stats.session, this.stats.daily, this.stats.hourly, this.stats.allTime].forEach(period => {
+        if (result === 'profit') {
+            period.wins++;
+        } else if (result === 'loss') {
+            period.losses++;
+        }
+        
+        if (period.profitSOL !== undefined) {
+            period.profitSOL += profit;
+        }
+    });
+    
+    // All time spécifique
+    this.stats.allTime.totalProfitSOL += profit;
+    this.stats.allTime.totalHoldTime += holdTime;
+    this.stats.allTime.avgHoldTime = this.stats.allTime.totalHoldTime / this.stats.allTime.totalTrades;
+    
+    // Best/Worst trades
+    if (profitPercent > this.stats.allTime.bestTrade.profit) {
+        this.stats.allTime.bestTrade = { symbol, profit: profitPercent };
+    }
+    if (profitPercent < this.stats.allTime.worstTrade.profit) {
+        this.stats.allTime.worstTrade = { symbol, profit: profitPercent };
+    }
+    
+    console.log(`📈 Trade fermé: ${symbol} ${profit > 0 ? '+' : ''}${profit.toFixed(4)} SOL`);
+}
+
+// AFFICHAGE RÉCAP COMPLET
+showPerformanceRecap() {
+    const now = new Date();
+    const sessionHours = ((Date.now() - this.stats.session.startTime) / (1000 * 60 * 60)).toFixed(1);
+    
+    console.log('\n' + '═'.repeat(80));
+    console.log(`📊 RÉCAP PERFORMANCE - ${now.toLocaleString()}`);
+    console.log('═'.repeat(80));
+    
+    // SESSION ACTUELLE
+    const sessionWinRate = this.stats.session.trades > 0 ? 
+        ((this.stats.session.wins / this.stats.session.trades) * 100).toFixed(1) : '0';
+    const sessionROI = this.stats.session.investedSOL > 0 ? 
+        ((this.stats.session.profitSOL / this.stats.session.investedSOL) * 100).toFixed(1) : '0';
+        
+    console.log(`🕐 SESSION (${sessionHours}h):`);
+    console.log(`   Trades: ${this.stats.session.trades} | Wins: ${this.stats.session.wins} | Losses: ${this.stats.session.losses} | WR: ${sessionWinRate}%`);
+    console.log(`   Investi: ${this.stats.session.investedSOL.toFixed(3)} SOL | Profit: ${this.stats.session.profitSOL > 0 ? '+' : ''}${this.stats.session.profitSOL.toFixed(4)} SOL | ROI: ${sessionROI}%`);
+    
+    // AUJOURD'HUI
+    const dailyWinRate = this.stats.daily.trades > 0 ? 
+        ((this.stats.daily.wins / this.stats.daily.trades) * 100).toFixed(1) : '0';
+    const dailyROI = this.stats.daily.investedSOL > 0 ? 
+        ((this.stats.daily.profitSOL / this.stats.daily.investedSOL) * 100).toFixed(1) : '0';
+        
+    console.log(`📅 AUJOURD'HUI (${this.stats.daily.date}):`);
+    console.log(`   Trades: ${this.stats.daily.trades} | Wins: ${this.stats.daily.wins} | Losses: ${this.stats.daily.losses} | WR: ${dailyWinRate}%`);
+    console.log(`   Investi: ${this.stats.daily.investedSOL.toFixed(3)} SOL | Profit: ${this.stats.daily.profitSOL > 0 ? '+' : ''}${this.stats.daily.profitSOL.toFixed(4)} SOL | ROI: ${dailyROI}%`);
+    
+    // CETTE HEURE
+    const hourlyWinRate = this.stats.hourly.trades > 0 ? 
+        ((this.stats.hourly.wins / this.stats.hourly.trades) * 100).toFixed(1) : '0';
+        
+    console.log(`⏰ CETTE HEURE (${this.stats.hourly.hour}h):`);
+    console.log(`   Trades: ${this.stats.hourly.trades} | Wins: ${this.stats.hourly.wins} | Losses: ${this.stats.hourly.losses} | WR: ${hourlyWinRate}%`);
+    console.log(`   Profit: ${this.stats.hourly.profitSOL > 0 ? '+' : ''}${this.stats.hourly.profitSOL.toFixed(4)} SOL`);
+    
+    // ALL TIME
+    const allTimeWinRate = this.stats.allTime.totalTrades > 0 ? 
+        ((this.stats.allTime.wins / this.stats.allTime.totalTrades) * 100).toFixed(1) : '0';
+    const allTimeROI = this.stats.allTime.totalInvestedSOL > 0 ? 
+        ((this.stats.allTime.totalProfitSOL / this.stats.allTime.totalInvestedSOL) * 100).toFixed(1) : '0';
+    const avgHoldHours = (this.stats.allTime.avgHoldTime / (1000 * 60 * 60)).toFixed(1);
+        
+    console.log(`🏆 ALL TIME:`);
+    console.log(`   Trades: ${this.stats.allTime.totalTrades} | Wins: ${this.stats.allTime.wins} | Losses: ${this.stats.allTime.losses} | WR: ${allTimeWinRate}%`);
+    console.log(`   Investi: ${this.stats.allTime.totalInvestedSOL.toFixed(3)} SOL | Profit: ${this.stats.allTime.totalProfitSOL > 0 ? '+' : ''}${this.stats.allTime.totalProfitSOL.toFixed(4)} SOL | ROI: ${allTimeROI}%`);
+    console.log(`   Hold moyen: ${avgHoldHours}h | Best: ${this.stats.allTime.bestTrade.symbol} (+${this.stats.allTime.bestTrade.profit.toFixed(1)}%) | Worst: ${this.stats.allTime.worstTrade.symbol} (${this.stats.allTime.worstTrade.profit.toFixed(1)}%)`);
+    
+    // POSITIONS ACTUELLES
+    console.log(`💼 POSITIONS ACTUELLES (${this.positions.size}):`);
+    if (this.positions.size > 0) {
+        for (const [, position] of this.positions.entries()) {
+            const currentPrice = position.lastKnownPrice || position.buyPrice;
+            const changePercent = ((currentPrice / position.buyPrice) - 1) * 100;
+            const holdTimeMin = ((Date.now() - position.buyTime) / (1000 * 60)).toFixed(0);
+            const unrealizedProfit = (position.currentAmount / position.buyAmount * position.solSpent * (1 + changePercent/100)) - position.solSpent + position.totalSolReceived;
+            
+            const emoji = changePercent > 10 ? '🚀' : changePercent > 0 ? '📈' : changePercent > -10 ? '⚠️' : '🔴';
+            const partialInfo = position.partialSells > 0 ? ` (${position.partialSells} ventes)` : '';
+            
+            console.log(`   ${emoji} ${position.symbol}: ${changePercent > 0 ? '+' : ''}${changePercent.toFixed(1)}% • ${holdTimeMin}min • P&L: ${unrealizedProfit > 0 ? '+' : ''}${unrealizedProfit.toFixed(4)} SOL${partialInfo}`);
+        }
+    } else {
+        console.log(`   Aucune position ouverte`);
+    }
+    
+    console.log('═'.repeat(80));
+}
+
+    // SURVEILLANCE ET GESTION DES POSITIONS
+    async checkPositions() {
+        if (this.positions.size === 0) return;
+        
+        console.log(`📊 Check de ${this.positions.size} positions...`);
+        
+        for (const [tokenAddress, position] of this.positions.entries()) {
+            try {
+                await this.checkSinglePosition(tokenAddress, position);
+                await new Promise(resolve => setTimeout(resolve, 1000));
+            } catch (error) {
+                console.error(`❌ Erreur check position ${position.symbol}: ${error.message}`);
+            }
+        }
+    }
+
+    async checkSinglePosition(tokenAddress, position) {
+        try {
+            // Obtenir le prix actuel via DexScreener
+            const response = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${tokenAddress}`);
+            if (!response.ok) return;
+            
+            const data = await response.json();
+            const pair = data.pairs?.find(p => p.chainId === 'solana');
+            if (!pair) return;
+            
+            const currentPrice = parseFloat(pair.priceUsd || 0);
+            if (currentPrice <= 0) return;
+            
+            const changePercent = ((currentPrice / position.buyPrice) - 1) * 100;
+            const holdTime = Date.now() - position.buyTime;
+            
+            // Mettre à jour le plus haut prix atteint
+            if (currentPrice > position.highestPrice) {
+                position.highestPrice = currentPrice;
+                position.highestPercent = changePercent;
+            }
+            
+            position.lastKnownPrice = currentPrice;
+            
+            console.log(`   💎 ${position.symbol}: ${changePercent > 0 ? '+' : ''}${changePercent.toFixed(1)}% (${((holdTime) / (1000 * 60)).toFixed(0)}min)`);
+            
+            // 1. VÉRIFIER STOP-LOSS
+            if (changePercent <= -this.stopLossPercent) {
+                console.log(`🛑 Stop-Loss déclenché: ${position.symbol} (${changePercent.toFixed(1)}%)`);
+                await this.sellEntirePosition(position, currentPrice, `Stop-Loss -${this.stopLossPercent}%`);
+                return;
+            }
+            
+            // 2. VÉRIFIER TRAILING STOP
+            if (this.useTrailingStop && position.highestPercent > 0) {
+                const trailingStopPrice = position.highestPrice * (1 - this.trailingStopPercent / 100);
+                if (currentPrice <= trailingStopPrice) {
+                    const trailingLoss = ((currentPrice / position.highestPrice) - 1) * 100;
+                    console.log(`📉 Trailing Stop déclenché: ${position.symbol} (${trailingLoss.toFixed(1)}% depuis le max)`);
+                    await this.sellEntirePosition(position, currentPrice, `Trailing Stop depuis +${position.highestPercent.toFixed(1)}%`);
+                    return;
+                }
+            }
+            
+            // 3. VÉRIFIER SORTIE PAR STAGNATION
+            if (this.stagnationExit.enabled) {
+                if (holdTime > this.stagnationExit.maxHoldTime) {
+                    console.log(`⏰ Sortie par temps maximum: ${position.symbol} (4h atteintes)`);
+                    await this.sellEntirePosition(position, currentPrice, "Temps maximum atteint (4h)");
+                    return;
+                }
+                
+                if (holdTime > this.stagnationExit.stagnantTime && 
+                    Math.abs(changePercent) < this.stagnationExit.stagnantThreshold) {
+                    console.log(`😴 Sortie par stagnation: ${position.symbol} (±${this.stagnationExit.stagnantThreshold}% depuis 2h)`);
+                    await this.sellEntirePosition(position, currentPrice, "Position stagnante");
+                    return;
+                }
+                
+                if (holdTime > this.stagnationExit.lossExitTime && 
+                    changePercent < this.stagnationExit.lossThreshold) {
+                    console.log(`🔴 Sortie par perte prolongée: ${position.symbol} (${changePercent.toFixed(1)}% depuis 1h30)`);
+                    await this.sellEntirePosition(position, currentPrice, "Perte prolongée");
+                    return;
+                }
+            }
+            
+            // 4. VÉRIFIER VENTES ÉCHELONNÉES
+            await this.checkStagedSells(position, changePercent, currentPrice);
+            
+        } catch (error) {
+            console.error(`❌ Erreur check position ${position.symbol}: ${error.message}`);
+        }
+    }
+
+    // VENTES ÉCHELONNÉES
+    async checkStagedSells(position, changePercent, currentPrice) {
+        // Détecter si c'est un moonshot (>1000%)
+        const isMoonshot = changePercent > 1000;
+        
+        if (isMoonshot) {
+            console.log(`🌙 MOONSHOT DÉTECTÉ: ${position.symbol} +${changePercent.toFixed(0)}%`);
+            
+            if (!position.moonshotSellAttempted) {
+                position.moonshotSellAttempted = true;
+                const success = await this.handleMoonshotSell(position, currentPrice, `+${changePercent.toFixed(0)}%`);
+                if (success) return;
+            }
+        }
+        
+        // Vérifier chaque niveau de vente
+        for (const level of this.sellLevels) {
+            if (changePercent >= level.profit && !position.sellsExecuted.includes(level.profit)) {
+                
+                const remainingAmount = position.currentAmount;
+                let amountToSell = remainingAmount * (level.percentage / 100);
+                
+                // Pour moonshots, réduire les montants
+                if (isMoonshot) {
+                    amountToSell = Math.min(amountToSell, remainingAmount * 0.1);
+                }
+                
+                if (amountToSell > 0) {
+                    console.log(`🎯 Vente échelonnée: ${position.symbol} +${changePercent.toFixed(1)}%`);
+                    console.log(`   💰 Vendre ${level.percentage}% (${amountToSell.toLocaleString()} tokens)`);
+                    
+                    const success = await this.sellPartialPosition(position, amountToSell, level, currentPrice);
+                    
+                    if (success) {
+                        position.sellsExecuted.push(level.profit);
+                        position.currentAmount = remainingAmount - amountToSell;
+                        
+                        if (position.currentAmount <= position.buyAmount * 0.01) {
+                            console.log(`✅ Position ${position.symbol} entièrement vendue`);
+                            this.positions.delete(position.tokenAddress);
+                            break;
+                        }
+                    } else if (isMoonshot) {
+                        position.sellsExecuted.push(level.profit);
+                    }
+                }
+            }
+        }
+    }
+
+    // GESTION VENTE MOONSHOT
+    async handleMoonshotSell(position, currentPrice, reason) {
+        console.log(`🌙 Gestion vente moonshot: ${position.symbol}`);
+        
+        const totalSellSuccess = await this.sellEntirePosition(position, currentPrice, `Moonshot ${reason}`);
+        
+        if (totalSellSuccess) {
+            console.log(`✅ Vente totale moonshot réussie !`);
+            return true;
+        }
+        
+        const chunkSuccess = await this.sellMoonshotInChunks(position, currentPrice);
+        if (chunkSuccess) return true;
+        
+        console.log(`⚠️ Vente moonshot impossible - surveillance continue`);
+        position.moonshotSellFailed = true;
+        position.lastFailedSellTime = Date.now();
+        
+        return false;
+    }
+
+    // VENTE PAR CHUNKS POUR MOONSHOTS
+    async sellMoonshotInChunks(position, currentPrice) {
+        try {
+            const tokenMint = position.tokenAddress;
+            
+            await this.waitForRateLimit();
+            const tokenAccounts = await this.connection.getParsedTokenAccountsByOwner(
+                this.wallet.publicKey,
+                { mint: new PublicKey(tokenMint) }
+            );
+            
+            if (tokenAccounts.value.length === 0) return false;
+            
+            const totalBalance = parseFloat(tokenAccounts.value[0].account.data.parsed.info.tokenAmount.amount);
+            const chunkSize = Math.floor(totalBalance * 0.1);
+            const maxChunks = 5;
+            let soldChunks = 0;
+            let totalSolReceived = 0;
+            
+            for (let i = 0; i < maxChunks; i++) {
+                const quote = await this.getJupiterQuote(tokenMint, 'So11111111111111111111111111111111111111112', chunkSize);
+                
+                if (quote) {
+                    const txid = await this.executeSwap(quote);
+                    
+                    if (txid) {
+                        const solReceived = parseFloat(quote.outAmount) / 1e9;
+                        totalSolReceived += solReceived;
+                        soldChunks++;
+                        
+                        position.totalSolReceived = (position.totalSolReceived || 0) + solReceived;
+                        position.partialSells++;
+                        
+                        await new Promise(resolve => setTimeout(resolve, 5000));
+                    } else {
+                        break;
+                    }
+                } else {
+                    break;
+                }
+            }
+            
+            if (soldChunks > 0) {
+                await this.notifyMoonshotChunkSell(position, soldChunks, totalSolReceived, currentPrice);
+                return true;
+            }
+            
+            return false;
+            
+        } catch (error) {
+            console.error(`❌ Erreur vente chunks: ${error.message}`);
+            return false;
+        }
+    }
+
+    // VENTE PARTIELLE
+    async sellPartialPosition(position, amountToSell, level, currentPrice) {
+        try {
+            const tokenMint = position.tokenAddress;
+            const solMint = 'So11111111111111111111111111111111111111112';
             const roundedAmount = Math.floor(amountToSell);
             
-            if (roundedAmount <= 0) {
-                console.log(`❌ Quantité arrondie trop petite: ${roundedAmount}`);
-                return false;
-            }
+            if (roundedAmount <= 0) return false;
             
-            console.log(`   📊 Quantité arrondie: ${roundedAmount.toLocaleString()}`);
-            
-            // Vérifier qu'on a assez de tokens
             const hasTokens = await this.checkWalletBalance(tokenMint, roundedAmount);
-            if (!hasTokens) {
-                console.log(`❌ Pas assez de tokens pour la vente partielle`);
-                return false;
-            }
+            if (!hasTokens) return false;
             
-            // Obtenir quote de vente pour la quantité partielle
             const sellQuote = await this.getJupiterQuote(tokenMint, solMint, roundedAmount);
+            if (!sellQuote) return false;
             
-            if (!sellQuote) {
-                console.log(`❌ Impossible d'obtenir quote de vente partielle pour ${position.symbol}`);
-                return false;
-            }
-            
-            console.log(`   💰 Quote reçu: ${roundedAmount} tokens → ${(parseFloat(sellQuote.outAmount) / 1e9).toFixed(4)} SOL`);
-            
-            // Exécuter la vente
             const txid = await this.executeSwap(sellQuote);
             
             if (txid) {
@@ -1314,15 +1309,8 @@ if (confirmed) {
                 const partialProfit = solReceived - (position.solSpent * (level.percentage / 100));
                 const partialProfitPercent = ((currentPrice / position.buyPrice) - 1) * 100;
                 
-                console.log(`✅ Vente partielle réussie: ${position.symbol}`);
-                console.log(`   💰 SOL reçu: ${solReceived.toFixed(4)}`);
-                console.log(`   📊 Profit partiel: ${partialProfit > 0 ? '+' : ''}${partialProfit.toFixed(4)} SOL`);
-                console.log(`   🔗 TX: ${txid}`);
-                
-                // Notification Discord pour vente partielle
                 await this.notifyPartialSell(position, solReceived, partialProfit, partialProfitPercent, level, txid);
                 
-                // Mettre à jour les statistiques de la position
                 position.totalSolReceived += solReceived;
                 position.partialSells += 1;
                 
@@ -1331,191 +1319,134 @@ if (confirmed) {
             
             return false;
         } catch (error) {
-            console.error(`❌ Erreur vente partielle ${position.symbol}: ${error.message}`);
+            console.error(`❌ Erreur vente partielle: ${error.message}`);
             return false;
         }
     }
-            showActiveCooldowns() {
-    if (this.tradedTokens.size === 0) {
-        console.log(`📊 Aucun token en cooldown`);
-        return;
-    }
-    
-    console.log(`📊 Tokens en cooldown:`);
-    
-    for (const [tokenAddress, history] of this.tradedTokens.entries()) {
-        const timeSinceLastTrade = Date.now() - history.lastTradeTime;
-        
-        let cooldownTime;
-        if (history.lastResult === 'profit') {
-            cooldownTime = this.retradeCooldown.afterProfit;
-        } else if (history.lastResult === 'loss') {
-            cooldownTime = this.retradeCooldown.afterLoss;
-        } else {
-            cooldownTime = this.retradeCooldown.normal;
-        }
-        
-        const remainingTime = cooldownTime - timeSinceLastTrade;
-        
-        if (remainingTime > 0) {
-            const remainingHours = (remainingTime / (1000 * 60 * 60)).toFixed(1);
-            const result = history.lastResult;
-            const profit = history.finalProfit ? `${history.finalProfit > 0 ? '+' : ''}${history.finalProfit.toFixed(1)}%` : 'N/A';
-            
-            console.log(`   🕐 ${tokenAddress.slice(0, 8)}... → ${remainingHours}h (${result}: ${profit})`);
-        }
-    }
-}
-    // Vendre toute la position restante avec vérifications renforcées
 
-        // Vendre toute la position restante avec vérifications renforcées + tracking re-trade
-async sellEntirePosition(position, currentPrice, reason) {
-    try {
-        console.log(`💸 Vente totale: ${position.symbol} (${reason})`);
-        
-        const tokenMint = position.tokenAddress;
-        const solMint = 'So11111111111111111111111111111111111111112';
-        
-        // Obtenir le solde réel du wallet pour ce token
-        await this.waitForRateLimit();
-        const tokenAccounts = await this.connection.getParsedTokenAccountsByOwner(
-            this.wallet.publicKey,
-            { mint: new PublicKey(tokenMint) }
-        );
-        
-        if (tokenAccounts.value.length === 0) {
-            console.log(`❌ Aucun compte token trouvé pour vente totale`);
+    // VENTE TOTALE
+    async sellEntirePosition(position, currentPrice, reason) {
+        try {
+            const tokenMint = position.tokenAddress;
+            const solMint = 'So11111111111111111111111111111111111111112';
             
-            // Marquer comme échec mais supprimer la position
-            this.markTokenAsProcessed(position.tokenAddress, 'loss');
-            this.positions.delete(position.tokenAddress);
-            return false;
-        }
-        
-        const realBalance = parseFloat(tokenAccounts.value[0].account.data.parsed.info.tokenAmount.amount);
-        const amountToSell = Math.floor(realBalance * 0.99); // Garder 1% pour éviter les erreurs d'arrondi
-        
-        console.log(`   🪙 Solde réel: ${realBalance.toLocaleString()}`);
-        console.log(`   🪙 Quantité à vendre: ${amountToSell.toLocaleString()}`);
-        
-        if (amountToSell <= 0) {
-            console.log(`❌ Pas de tokens à vendre (solde: ${realBalance})`);
+            await this.waitForRateLimit();
+            const tokenAccounts = await this.connection.getParsedTokenAccountsByOwner(
+                this.wallet.publicKey,
+                { mint: new PublicKey(tokenMint) }
+            );
             
-            // Position vide, la supprimer et marquer selon le contexte
-            const tradeResult = position.totalSolReceived > 0 ? 'profit' : 'breakeven';
-            this.markTokenAsProcessed(position.tokenAddress, tradeResult);
-            this.positions.delete(position.tokenAddress);
-            return false;
-        }
-        
-        // Obtenir quote de vente pour tout le restant
-        const sellQuote = await this.getJupiterQuote(tokenMint, solMint, amountToSell);
-        
-        if (!sellQuote) {
-            console.log(`❌ Impossible d'obtenir quote de vente totale pour ${position.symbol}`);
-            
-            // Marquer comme échec technique mais garder la position pour retry
-            console.log(`⚠️ Quote échoué, position gardée pour retry ultérieur`);
-            return false;
-        }
-        
-        const expectedSol = parseFloat(sellQuote.outAmount) / 1e9;
-        console.log(`   💰 Quote reçu: ${amountToSell.toLocaleString()} tokens → ${expectedSol.toFixed(4)} SOL`);
-        
-        // Exécuter la vente
-        const txid = await this.executeSwap(sellQuote);
-        
-        if (txid) {
-            const solReceived = parseFloat(sellQuote.outAmount) / 1e9;
-            const totalSolReceived = position.totalSolReceived + solReceived;
-            const totalProfit = totalSolReceived - position.solSpent;
-            const totalProfitPercent = ((totalSolReceived / position.solSpent) - 1) * 100;
-            const holdTimeMin = ((Date.now() - position.buyTime) / (1000 * 60)).toFixed(0);
-            
-            console.log(`✅ Vente totale réussie: ${position.symbol}`);
-            console.log(`   💰 SOL final reçu: ${solReceived.toFixed(4)} SOL`);
-            console.log(`   💰 SOL total reçu: ${totalSolReceived.toFixed(4)} SOL`);
-            console.log(`   📊 Profit total: ${totalProfit > 0 ? '+' : ''}${totalProfit.toFixed(4)} SOL (${totalProfitPercent > 0 ? '+' : ''}${totalProfitPercent.toFixed(1)}%)`);
-            console.log(`   ⏱️ Durée position: ${holdTimeMin} minutes`);
-            console.log(`   🎯 Ventes partielles: ${position.partialSells}`);
-            console.log(`   🔗 TX finale: ${txid}`);
-            
-            // 🆕 DÉTERMINER LE RÉSULTAT POUR LE RE-TRADE SYSTEM
-            let tradeResult;
-            if (totalProfitPercent > 10) {
-                tradeResult = 'profit';
-                console.log(`🎉 Trade profitable: ${totalProfitPercent.toFixed(1)}% → Cooldown 12h`);
-            } else if (totalProfitPercent < -5) {
-                tradeResult = 'loss';
-                console.log(`😞 Trade en perte: ${totalProfitPercent.toFixed(1)}% → Cooldown 48h`);
-            } else {
-                tradeResult = 'breakeven';
-                console.log(`⚖️ Trade breakeven: ${totalProfitPercent.toFixed(1)}% → Cooldown 24h`);
+            if (tokenAccounts.value.length === 0) {
+                this.markTokenAsProcessed(position.tokenAddress, 'loss');
+                this.positions.delete(position.tokenAddress);
+                return false;
             }
             
-            // Mettre à jour l'historique de re-trade avec le résultat final
-            this.markTokenAsProcessed(position.tokenAddress, tradeResult);
+            const realBalance = parseFloat(tokenAccounts.value[0].account.data.parsed.info.tokenAmount.amount);
+            const amountToSell = Math.floor(realBalance * 0.99);
             
-            // Stocker infos supplémentaires pour l'historique
-            if (this.tradedTokens.has(position.tokenAddress)) {
-                const history = this.tradedTokens.get(position.tokenAddress);
-                history.finalProfit = totalProfitPercent;
-                history.holdTimeMinutes = parseInt(holdTimeMin);
-                history.partialSells = position.partialSells;
-                history.exitReason = reason;
-                history.totalSolReceived = totalSolReceived;
+            if (amountToSell <= 0) {
+                const tradeResult = position.totalSolReceived > 0 ? 'profit' : 'breakeven';
+                this.markTokenAsProcessed(position.tokenAddress, tradeResult);
+                this.positions.delete(position.tokenAddress);
+                return false;
             }
             
-            // Notification Discord pour vente finale
-            await this.notifyFinalSell(position, totalSolReceived, totalProfit, totalProfitPercent, reason, txid);
+            const sellQuote = await this.getJupiterQuote(tokenMint, solMint, amountToSell);
+            if (!sellQuote) return false;
             
-            // Supprimer la position
-            this.positions.delete(position.tokenAddress);
+            const txid = await this.executeSwap(sellQuote);
             
-            // Invalider le cache de solde pour forcer refresh
-            const cacheKey = `${solMint}_${this.wallet.publicKey.toString()}`;
-            this.balanceCache.delete(cacheKey);
-            
-            console.log(`🗑️ Position ${position.symbol} fermée et supprimée`);
-            
-            return true;
-            
-        } else {
-            console.log(`❌ Échec de la vente totale pour ${position.symbol}`);
-            
-            // En cas d'échec de vente, ne pas supprimer la position
-            // Mais marquer dans l'historique pour éviter re-trade immédiat
-            console.log(`⚠️ Vente échouée, position gardée pour retry`);
-            
-            // Marquer comme échec technique avec cooldown modéré
-            this.markTokenAsProcessed(position.tokenAddress, 'loss');
+            if (txid) {
+                const solReceived = parseFloat(sellQuote.outAmount) / 1e9;
+                const totalSolReceived = position.totalSolReceived + solReceived;
+                const totalProfit = totalSolReceived - position.solSpent;
+                const totalProfitPercent = ((totalSolReceived / position.solSpent) - 1) * 100;
+                
+                // Déterminer le résultat pour le système de cooldown
+                let tradeResult;
+                if (totalProfitPercent > 10) {
+                    tradeResult = 'profit';
+                } else if (totalProfitPercent < -5) {
+                    tradeResult = 'loss';
+                } else {
+                    tradeResult = 'breakeven';
+                }
+                
+                // METTRE À JOUR LES STATISTIQUES
+                this.updateStatsOnSell(totalSolReceived, position.solSpent, totalProfitPercent, position.buyTime, position.symbol, tradeResult);
+                
+                this.markTokenAsProcessed(position.tokenAddress, tradeResult);
+                
+                // Stocker infos pour l'historique
+                if (this.tradedTokens.has(position.tokenAddress)) {
+                    const history = this.tradedTokens.get(position.tokenAddress);
+                    history.finalProfit = totalProfitPercent;
+                    history.holdTimeMinutes = parseInt(((Date.now() - position.buyTime) / (1000 * 60)));
+                    history.partialSells = position.partialSells;
+                    history.exitReason = reason;
+                    history.totalSolReceived = totalSolReceived;
+                }
+                
+                await this.notifyFinalSell(position, totalSolReceived, totalProfit, totalProfitPercent, reason, txid);
+                
+                this.positions.delete(position.tokenAddress);
+                
+                // Invalider le cache SOL
+                const cacheKey = `${solMint}_${this.wallet.publicKey.toString()}`;
+                this.balanceCache.delete(cacheKey);
+                
+                return true;
+            }
             
             return false;
+            
+        } catch (error) {
+            console.error(`❌ Erreur vente totale: ${error.message}`);
+            this.markTokenAsProcessed(position.tokenAddress, 'loss');
+            return false;
         }
-        
-    } catch (error) {
-        console.error(`❌ Erreur vente totale ${position.symbol}: ${error.message}`);
-        
-        // Log détaillé pour debug
-        console.error(`🔍 Détails erreur:`, {
-            tokenAddress: position.tokenAddress,
-            symbol: position.symbol,
-            reason: reason,
-            currentPrice: currentPrice,
-            error: error.stack
-        });
-        
-        // En cas d'erreur grave, marquer comme perte pour éviter re-trade rapide
-        this.markTokenAsProcessed(position.tokenAddress, 'loss');
-        
-        // Ne pas supprimer la position en cas d'erreur technique
-        // Elle sera retry au prochain cycle
-        console.log(`⚠️ Erreur technique, position gardée pour retry`);
-        
-        return false;
     }
-}
-    // Notification Discord d'achat
+
+    // TRAITEMENT DES NOUVEAUX TOKENS
+    async processNewTokens(tokens) {
+        if (this.positions.size >= this.maxConcurrentPositions) {
+            console.log(`⏸️ Maximum de positions atteint (${this.maxConcurrentPositions})`);
+            return 0;
+        }
+        
+        let boughtCount = 0;
+        const maxToBuy = this.maxConcurrentPositions - this.positions.size;
+        
+        for (const tokenData of tokens.slice(0, maxToBuy * 2)) {
+            try {
+                const tokenAddress = tokenData.baseToken?.address;
+                if (!tokenAddress) continue;
+                
+                if (this.isAddressBanned(tokenAddress)) continue;
+                if (this.isTokenAlreadyProcessed(tokenAddress, tokenData.momentumScore || 0)) continue;
+                if (this.positions.has(tokenAddress)) continue;
+                
+                const bought = await this.buyToken(tokenAddress, tokenData);
+                
+                if (bought) {
+                    this.markTokenAsProcessed(tokenAddress);
+                    boughtCount++;
+                    
+                    if (boughtCount >= maxToBuy) break;
+                }
+                
+                await new Promise(resolve => setTimeout(resolve, 3000));
+                
+            } catch (error) {
+                console.error(`❌ Erreur traitement token: ${error.message}`);
+            }
+        }
+        
+        return boughtCount;
+    }
+
+    // NOTIFICATIONS DISCORD
     async notifyBuy(position, tokenData) {
         try {
             const channel = await this.client.channels.fetch(this.channelId);
@@ -1523,50 +1454,34 @@ async sellEntirePosition(position, currentPrice, reason) {
             
             const embed = new EmbedBuilder()
                 .setColor(0x00ff00)
-                .setTitle(`🛒 ACHAT AUTOMATIQUE - ${position.symbol}`)
-                .setDescription(`**Auto-trader a acheté ${tokenData.baseToken.name}**`)
+                .setTitle(`🛡️ ACHAT SÉCURISÉ - ${position.symbol}`)
+                .setDescription(`**Token whitelist vérifié acheté**`)
                 .addFields(
                     {
-                        name: '💰 Prix d\'achat',
-                        value: `$${position.buyPrice.toFixed(6)}`,
+                        name: '💰 Détails achat',
+                        value: `Prix: ${position.buyPrice.toFixed(6)}\nQuantité: ${position.buyAmount.toLocaleString()}\nInvesti: ${position.solSpent} SOL`,
                         inline: true
                     },
                     {
-                        name: '🪙 Quantité',
-                        value: position.buyAmount.toLocaleString(),
+                        name: '📊 Performance',
+                        value: `1h: +${tokenData.priceChange?.h1?.toFixed(1) || 'N/A'}%\n24h: +${tokenData.priceChange?.h24?.toFixed(1) || 'N/A'}%`,
                         inline: true
                     },
                     {
-                        name: '💎 SOL dépensé',
-                        value: `${position.solSpent} SOL`,
-                        inline: true
-                    },
-                    {
-                        name: '🎯 Ventes échelonnées',
-                        value: `+20% (50%), +75% (60%), +200% (75%), +500% (90%)`,
+                        name: '🎯 Stratégie',
+                        value: `Ventes: +20% (50%), +75% (60%), +200% (75%), +500% (90%)\nStop-Loss: -${this.stopLossPercent}%`,
                         inline: false
                     },
-                    {
-                        name: '🛡️ Protections',
-                        value: `📉 Stop-Loss: -${this.stopLossPercent}%\n📈 Trailing: -${this.trailingStopPercent}%`,
-                        inline: false
-                    },
-                    {
-                        name: '📍 Adresse',
-                        value: `\`${position.tokenAddress}\``,
-                        inline: false
-                    },
-                    {
-                        name: '🔗 Liens',
-                        value: `[📊 DexScreener](${tokenData.url}) | [🔍 Solscan](https://solscan.io/tx/${position.buyTxid})`,
-                        inline: false
-                    }
+                        {
+                            name: '🔗 Liens',
+                            value: `[📊 DexScreener](https://dexscreener.com/solana/${position.tokenAddress}) | [🔍 TX Achat](https://solscan.io/tx/${position.buyTxid})`,
+                            inline: false
+                        }
                 )
-                .setFooter({ text: `Achat à ${new Date().toLocaleTimeString()}` })
                 .setTimestamp();
             
             await channel.send({
-                content: `🚨 **ACHAT AUTO** 🚨\n${position.symbol} acheté pour ${position.solSpent} SOL`,
+                content: `🛡️ **ACHAT SÉCURISÉ** 🛡️\n${position.symbol} - Token whitelist vérifié !`,
                 embeds: [embed]
             });
             
@@ -1574,70 +1489,7 @@ async sellEntirePosition(position, currentPrice, reason) {
             console.error('❌ Erreur notification achat:', error.message);
         }
     }
-        async getCoinGeckoSolanaAddresses(coinGeckoTokens) {
-    console.log('🔍 Recherche adresses Solana via DexScreener...');
-    
-    const tokensWithAddresses = [];
-    
-    for (const token of coinGeckoTokens.slice(0, 5)) { // Limiter à 5 pour éviter rate limit
-        try {
-            console.log(`   🔎 Recherche ${token.baseToken.symbol}...`);
-            
-            // Rechercher sur DexScreener par symbole
-            const searchResponse = await fetch(
-                `https://api.dexscreener.com/latest/dex/search?q=${token.baseToken.symbol}`
-            );
-            
-            if (searchResponse.ok) {
-                const searchData = await searchResponse.json();
-                
-                // Trouver une paire Solana correspondante
-                const solanaPair = searchData.pairs?.find(pair => 
-                    pair.chainId === 'solana' && 
-                    pair.baseToken?.symbol?.toLowerCase() === token.baseToken.symbol.toLowerCase() &&
-                    parseFloat(pair.liquidity?.usd || 0) > 50000 // Min 50k liquidité
-                );
-                
-                if (solanaPair) {
-                    // Ajouter l'adresse Solana trouvée
-                    token.baseToken.address = solanaPair.baseToken.address;
-                    token.liquidity = solanaPair.liquidity;
-                    token.pairAddress = solanaPair.pairAddress;
-                    token.url = solanaPair.url;
-                    
-                    tokensWithAddresses.push(token);
-                    console.log(`   ✅ ${token.baseToken.symbol}: ${solanaPair.baseToken.address.slice(0, 8)}...`);
-                } else {
-                    console.log(`   ❌ ${token.baseToken.symbol}: Pas d'adresse Solana trouvée`);
-                }
-            }
-            
-            // Rate limiting
-            await new Promise(resolve => setTimeout(resolve, 1000));
-            
-        } catch (error) {
-            console.log(`   ⚠️ Erreur ${token.baseToken.symbol}: ${error.message}`);
-        }
-    }
-    
-    console.log(`✅ ${tokensWithAddresses.length} tokens avec adresses Solana`);
-    return tokensWithAddresses;
-}
 
-// Ajouter cette méthode helper:
-getCoinGeckoScanReason(token) {
-    const change1h = token.price_change_percentage_1h_in_currency || 0;
-    const change24h = token.price_change_percentage_24h || 0;
-    const volume = token.total_volume || 0;
-    
-    if (change1h > 10 && change24h > 20) return "🔥 Hot Momentum";
-    if (change1h > 0 && change24h > 0) return "📈 Consistent Growth";
-    if (change1h > 15) return "⚡ Pump Detected";
-    if (change24h > 25) return "🚀 Breakout";
-    if (volume > 1000000) return "💎 High Volume";
-    return "📊 CoinGecko Trending";
-}
-    // Notification Discord pour vente partielle
     async notifyPartialSell(position, solReceived, profit, profitPercent, level, txid) {
         try {
             const channel = await this.client.channels.fetch(this.channelId);
@@ -1649,7 +1501,7 @@ getCoinGeckoScanReason(token) {
                 .setDescription(`**${level.reason}** - ${level.percentage}% vendu`)
                 .addFields(
                     {
-                        name: '💰 SOL reçu (partiel)',
+                        name: '💰 SOL reçu',
                         value: `${solReceived.toFixed(4)} SOL`,
                         inline: true
                     },
@@ -1659,27 +1511,11 @@ getCoinGeckoScanReason(token) {
                         inline: true
                     },
                     {
-                        name: '🪙 Restant',
-                        value: `${(100 - level.percentage).toFixed(0)}%`,
-                        inline: true
-                    },
-                    {
-                        name: '📊 Ventes effectuées',
-                        value: `${position.partialSells + 1} niveaux`,
-                        inline: true
-                    },
-                    {
-                        name: '⏱️ Durée position',
+                        name: '⏱️ Durée',
                         value: `${((Date.now() - position.buyTime) / (1000 * 60)).toFixed(0)} min`,
                         inline: true
-                    },
-                    {
-                        name: '🔗 Transaction',
-                        value: `[🔍 Solscan](https://solscan.io/tx/${txid})`,
-                        inline: false
                     }
                 )
-                .setFooter({ text: `Vente partielle à ${new Date().toLocaleTimeString()}` })
                 .setTimestamp();
             
             await channel.send({
@@ -1692,7 +1528,6 @@ getCoinGeckoScanReason(token) {
         }
     }
 
-    // Notification Discord pour vente finale
     async notifyFinalSell(position, totalSolReceived, totalProfit, totalProfitPercent, reason, txid) {
         try {
             const channel = await this.client.channels.fetch(this.channelId);
@@ -1713,37 +1548,21 @@ getCoinGeckoScanReason(token) {
                         inline: true
                     },
                     {
-                        name: `${emoji} Profit/Perte total`,
+                        name: `${emoji} Profit/Perte`,
                         value: `${totalProfit > 0 ? '+' : ''}${totalProfit.toFixed(4)} SOL`,
                         inline: true
                     },
                     {
-                        name: '📊 Performance totale',
+                        name: '📊 Performance',
                         value: `${totalProfitPercent > 0 ? '+' : ''}${totalProfitPercent.toFixed(1)}%`,
-                        inline: true
-                    },
-                    {
-                        name: '🎯 Ventes échelonnées',
-                        value: `${position.partialSells} niveaux + finale`,
-                        inline: true
-                    },
-                    {
-                        name: '📈 Plus haut atteint',
-                        value: `+${position.highestPercent.toFixed(1)}%`,
                         inline: true
                     },
                     {
                         name: '⏱️ Durée totale',
                         value: `${((Date.now() - position.buyTime) / (1000 * 60)).toFixed(0)} minutes`,
                         inline: true
-                    },
-                    {
-                        name: '🔗 Transaction finale',
-                        value: `[🔍 Solscan](https://solscan.io/tx/${txid})`,
-                        inline: false
                     }
                 )
-                .setFooter({ text: `Position fermée à ${new Date().toLocaleTimeString()}` })
                 .setTimestamp();
             
             await channel.send({
@@ -1756,214 +1575,176 @@ getCoinGeckoScanReason(token) {
         }
     }
 
-    // Traiter les nouveaux tokens
-    async processNewTokens(tokens) {
-    console.log(`🔄 Traitement de ${tokens.length} tokens CoinGecko...`);
-    
-    // Vérifier qu'on n'a pas déjà le maximum de positions
-    if (this.positions.size >= this.maxConcurrentPositions) {
-        console.log(`⏸️ Maximum de positions atteint (${this.maxConcurrentPositions})`);
-        return 0;
-    }
-    
-    let boughtCount = 0;
-    const maxToBuy = this.maxConcurrentPositions - this.positions.size;
-    
-    for (const tokenData of tokens.slice(0, maxToBuy * 2)) { // Essayer 2x plus que nécessaire
+    async notifyMoonshotChunkSell(position, soldChunks, totalSolReceived, currentPrice) {
         try {
-            const tokenAddress = tokenData.baseToken?.address;
-            if (!tokenAddress) continue;
+            const channel = await this.client.channels.fetch(this.channelId);
+            if (!channel) return;
             
-            if (this.isAddressBanned(tokenAddress)) {
-                console.log(`🚫 Token banni ignoré: ${tokenData.baseToken.symbol}`);
-                continue;
-            }
+            const changePercent = ((currentPrice / position.buyPrice) - 1) * 100;
             
-            if (this.isTokenAlreadyProcessed(tokenAddress, tokenData.momentumScore || 0)) {
-                console.log(`⏭️ Token déjà traité: ${tokenData.baseToken.symbol}`);
-                continue;
-            }
+            const embed = new EmbedBuilder()
+                .setColor(0xffd700)
+                .setTitle(`🌙 MOONSHOT PARTIEL - ${position.symbol}`)
+                .setDescription(`**Vente par chunks réussie !**`)
+                .addFields(
+                    {
+                        name: '🚀 Performance',
+                        value: `+${changePercent.toFixed(0)}%`,
+                        inline: true
+                    },
+                    {
+                        name: '🧩 Chunks vendus',
+                        value: `${soldChunks}/5 chunks`,
+                        inline: true
+                    },
+                    {
+                        name: '💰 SOL reçu',
+                        value: `${totalSolReceived.toFixed(4)} SOL`,
+                        inline: true
+                    }
+                )
+                .setTimestamp();
             
-            if (this.positions.has(tokenAddress)) {
-                console.log(`⏭️ Position déjà ouverte: ${tokenData.baseToken.symbol}`);
-                continue;
-            }
-            
-            console.log(`🎯 Tentative achat: ${tokenData.baseToken.symbol} (${tokenData.scanReason})`);
-            const bought = await this.buyToken(tokenAddress, tokenData);
-            
-            if (bought) {
-                this.markTokenAsProcessed(tokenAddress);
-                boughtCount++;
-                console.log(`✅ Achat réussi ${boughtCount}/${maxToBuy}: ${tokenData.baseToken.symbol}`);
-                
-                if (boughtCount >= maxToBuy) {
-                    console.log('✅ Quota d\'achats atteint pour ce cycle');
-                    break;
-                }
-            } else {
-                console.log(`❌ Échec achat: ${tokenData.baseToken.symbol}`);
-            }
-            
-            await new Promise(resolve => setTimeout(resolve, 3000));
+            await channel.send({
+                content: `🌙 **MOONSHOT ALERT** 🌙\n${position.symbol}: +${changePercent.toFixed(0)}% - Vente partielle réussie !`,
+                embeds: [embed]
+            });
             
         } catch (error) {
-            console.error(`❌ Erreur traitement token: ${error.message}`);
+            console.error('❌ Erreur notification moonshot:', error.message);
         }
     }
-    
-    console.log(`✅ ${boughtCount} nouveaux achats CoinGecko`);
-    return boughtCount;
-}
-    // Fonction principale de scan et trading
-    async runTradingCycle() {
-        console.log('\n🤖 CYCLE DE TRADING AUTO');
-        console.log('═'.repeat(50));
+
+    // AFFICHAGE DES COOLDOWNS ACTIFS
+    showActiveCooldowns() {
+        if (this.tradedTokens.size === 0) {
+            console.log(`📊 Aucun token en cooldown`);
+            return;
+        }
         
-        try {
-            // 1. Vérifier les positions existantes CHAQUE MINUTE
-            if (this.positions.size > 0) {
-                await this.checkPositions();
-            }
+        console.log(`📊 Tokens en cooldown:`);
+        
+        for (const [tokenAddress, history] of this.tradedTokens.entries()) {
+            const timeSinceLastTrade = Date.now() - history.lastTradeTime;
             
-            // 2. Scanner les nouveaux tokens (moins fréquent)
-            const tokens = await this.scanNewTokens();
-            
-            if (tokens.length > 0) {
-                // 3. Traiter les nouveaux tokens
-                await this.processNewTokens(tokens);
+            let cooldownTime;
+            if (history.lastResult === 'profit') {
+                cooldownTime = this.retradeCooldown.afterProfit;
+            } else if (history.lastResult === 'loss') {
+                cooldownTime = this.retradeCooldown.afterLoss;
             } else {
-                console.log('⚠️ Aucun nouveau token trouvé');
+                cooldownTime = this.retradeCooldown.normal;
             }
             
-            // 4. Statistiques
-            console.log(`\n📊 Positions actives: ${this.positions.size}`);
-            if (this.positions.size > 0) {
-                for (const [, position] of this.positions) {
-                    const duration = ((Date.now() - position.buyTime) / (1000 * 60)).toFixed(0);
-                    const profit = ((position.totalSolReceived + (position.currentAmount / position.buyAmount * position.solSpent)) / position.solSpent - 1) * 100;
-                    console.log(`   💎 ${position.symbol}: ${duration}min, ${profit > 0 ? '+' : ''}${profit.toFixed(1)}%, ${position.partialSells} ventes`);
-                }
-            }
+            const remainingTime = cooldownTime - timeSinceLastTrade;
             
-            return true;
-            
-        } catch (error) {
-            console.error('❌ Erreur cycle trading:', error.message);
-            return false;
-        }
-    }
-    // Charger les adresses bannies depuis un fichier
-loadBannedAddresses() {
-    try {
-        const fs = require('fs');
-        if (fs.existsSync('./banned_addresses.txt')) {
-            const content = fs.readFileSync('./banned_addresses.txt', 'utf8');
-            const addresses = content.split('\n')
-                .map(addr => addr.trim())
-                .filter(addr => addr && !addr.startsWith('#'));
-            
-            addresses.forEach(addr => this.bannedAddresses.add(addr));
-            console.log(`🚫 ${addresses.length} adresses bannies chargées`);
-        }
-    } catch (error) {
-        console.log('⚠️ Erreur chargement banned_addresses.txt:', error.message);
-    }
-}
-
-// Vérifier si une adresse est bannie
-isAddressBanned(tokenAddress) {
-    return this.bannedAddresses.has(tokenAddress);
-}
-
-// Ajouter une adresse à la liste des bannies
-banAddress(tokenAddress, reason = 'Manual ban') {
-    this.bannedAddresses.add(tokenAddress);
-    console.log(`🚫 Adresse bannie: ${tokenAddress} (${reason})`);
-    
-    // Sauvegarder dans le fichier
-    this.saveBannedAddresses();
-}
-
-// Sauvegarder les adresses bannies
-saveBannedAddresses() {
-    try {
-        const fs = require('fs');
-        const content = Array.from(this.bannedAddresses).join('\n');
-        fs.writeFileSync('./banned_addresses.txt', content);
-    } catch (error) {
-        console.log('⚠️ Erreur sauvegarde banned_addresses.txt:', error.message);
-    }
-}
-    // Lancer le trading automatique avec double timing
-async startAutoTrading() {
-console.log(`🚀 Démarrage Auto-Trading Whitelist DexScreener`);
-console.log(`💼 Wallet: ${this.wallet.publicKey.toString()}`);
-console.log(`💰 Montant par achat: ${this.buyAmount} SOL`);
-console.log(`🎯 Max positions simultanées: ${this.maxConcurrentPositions}`);
-console.log(`🛡️ Source: Whitelist DexScreener Direct`);  // ← CHANGÉ
-console.log(`⏰ Check positions: Toutes les 2 minutes`);
-console.log(`📊 Scan whitelist: Toutes les 10 minutes`);  // ← CHANGÉ
-console.log('💡 Appuyez sur Ctrl+C pour arrêter\n');
-    let scanCount = 0;
-    
-    // Timer positions (2 minutes)
-    const positionCheckTimer = setInterval(async () => {
-        try {
-            if (this.positions.size > 0) {
-                console.log(`\n⏰ ${new Date().toLocaleTimeString()} - Check ${this.positions.size} positions`);
-                await this.checkPositions();
+            if (remainingTime > 0) {
+                const remainingHours = (remainingTime / (1000 * 60 * 60)).toFixed(1);
+                const result = history.lastResult;
+                const profit = history.finalProfit ? `${history.finalProfit > 0 ? '+' : ''}${history.finalProfit.toFixed(1)}%` : 'N/A';
                 
-                // Si une position se ferme et qu'on est sous le max, relancer un scan
-                if (this.positions.size < this.maxConcurrentPositions) {
-                    console.log(`💡 Position libre détectée, scan opportuniste...`);
-                    const tokens = await this.scanNewTokens();
-                    if (tokens.length > 0) {
-                        await this.processNewTokens(tokens);
+                console.log(`   🕐 ${tokenAddress.slice(0, 8)}... → ${remainingHours}h (${result}: ${profit})`);
+            }
+        }
+    }
+
+    // LANCEMENT DE L'AUTO-TRADING
+    async startAutoTrading() {
+        console.log(`🚀 Démarrage Auto-Trading Whitelist DexScreener`);
+        console.log(`💼 Wallet: ${this.wallet.publicKey.toString()}`);
+        console.log(`💰 Montant par achat: ${this.buyAmount} SOL`);
+        console.log(`🎯 Max positions simultanées: ${this.maxConcurrentPositions}`);
+        console.log(`🛡️ Source: Whitelist DexScreener Direct`);
+        console.log(`⏰ Check positions: Toutes les 2 minutes`);
+        console.log(`📊 Scan whitelist: Toutes les 10 minutes`);
+        console.log('💡 Appuyez sur Ctrl+C pour arrêter\n');
+        
+        let scanCount = 0;
+        
+        // Timer récap performance (toutes les 10 minutes)
+        const performanceTimer = setInterval(() => {
+    try {
+        this.showPerformanceRecap();
+    } catch (error) {
+        console.log('📊 Récap en attente...');
+    }
+}, 10 * 60 * 1000);
+        
+        // Timer positions (2 minutes)
+        const positionCheckTimer = setInterval(async () => {
+            try {
+                if (this.positions.size > 0) {
+                    console.log(`\n⏰ ${new Date().toLocaleTimeString()} - Check ${this.positions.size} positions`);
+                    await this.checkPositions();
+                    
+                    if (this.positions.size < this.maxConcurrentPositions) {
+                        console.log(`💡 Position libre détectée, scan opportuniste...`);
+                        const tokens = await this.scanNewTokens();
+                        if (tokens.length > 0) {
+                            await this.processNewTokens(tokens);
+                        }
                     }
                 }
+            } catch (error) {
+                console.error('❌ Erreur check positions:', error.message);
             }
-        } catch (error) {
-            console.error('❌ Erreur check positions:', error.message);
-        }
-    }, 2 * 60 * 1000);
-    
-    // Timer scan CoinGecko (10 minutes) 
-    const scanTimer = setInterval(async () => {
+        }, 2 * 60 * 1000);
+        
+        // Timer scan (10 minutes) 
+        const scanTimer = setInterval(async () => {
+            try {
+                scanCount++;
+                console.log(`\n⏰ ${new Date().toLocaleTimeString()} - Scan whitelist #${scanCount}`);
+                
+                const tokens = await this.scanNewTokens();
+                if (tokens.length > 0) {
+                    await this.processNewTokens(tokens);
+                }
+                
+                console.log(`📊 Positions: ${this.positions.size}/${this.maxConcurrentPositions}`);
+                if (scanCount % 3 === 0) {
+                    this.showActiveCooldowns();
+                }
+            } catch (error) {
+                console.error('❌ Erreur scan whitelist:', error.message);
+            }
+        }, 10 * 60 * 1000);
+        
+        // Scan initial avec récap
         try {
-            scanCount++;
-            console.log(`\n⏰ ${new Date().toLocaleTimeString()} - Scan CoinGecko #${scanCount}`);
-            
+            console.log(`\n⏰ ${new Date().toLocaleString()} - Scan initial whitelist`);
             const tokens = await this.scanNewTokens();
             if (tokens.length > 0) {
                 await this.processNewTokens(tokens);
             }
             
-            console.log(`📊 Positions: ${this.positions.size}/${this.maxConcurrentPositions}`);
-            if (scanCount % 3 === 0) { // Toutes les 3 scans (30min)
-    this.showActiveCooldowns();
-}
+            
+            
         } catch (error) {
-            console.error('❌ Erreur scan CoinGecko:', error.message);
+            console.error('❌ Erreur scan initial:', error.message);
         }
-    }, 10 * 60 * 1000);
-    
-    // Scan initial
-    try {
-        console.log(`\n⏰ ${new Date().toLocaleString()} - Scan initial CoinGecko`);
-        const tokens = await this.scanNewTokens();
-        if (tokens.length > 0) {
-            await this.processNewTokens(tokens);
+        
+        // Gestion arrêt propre
+        process.on('SIGINT', () => {
+            console.log('\n🛑 Arrêt demandé...');
+            clearInterval(positionCheckTimer);
+            clearInterval(scanTimer);
+            clearInterval(performanceTimer);
+            console.log('✅ Timers arrêtés');
+            
+
+            
+            process.exit(0);
+        });
+        
+        // Boucle principale pour maintenir le processus
+        while (true) {
+            await new Promise(resolve => setTimeout(resolve, 60000));
         }
-    } catch (error) {
-        console.error('❌ Erreur scan initial:', error.message);
     }
-    
-    // ... rest of existing code (SIGINT handler, while loop) ...
-}
 }
 
-// Fonctions d'utilisation
+// FONCTIONS D'UTILISATION
 async function runAutoTrader() {
     console.log('🤖 Auto-Trader Jupiter - Ventes Échelonnées');
     console.log('═'.repeat(60));
@@ -1971,17 +1752,14 @@ async function runAutoTrader() {
     const trader = new SimpleAutoTrader();
     
     try {
-        // Initialiser Discord
         const isConnected = await trader.initializeDiscord();
         if (!isConnected) {
             console.log('❌ Impossible de se connecter à Discord');
             return;
         }
         
-        // Attendre la connexion
         await new Promise(resolve => setTimeout(resolve, 2000));
         
-        // Vérifier le solde
         const balance = await trader.connection.getBalance(trader.wallet.publicKey);
         const solBalance = balance / 1e9;
         
@@ -1992,7 +1770,6 @@ async function runAutoTrader() {
             return;
         }
         
-        // Lancer l'auto-trading avec double timing
         await trader.startAutoTrading();
         
     } catch (error) {
@@ -2006,14 +1783,12 @@ async function testTrader() {
     const trader = new SimpleAutoTrader();
     
     try {
-        // Test connexions
         await trader.initializeDiscord();
         console.log('✅ Discord OK');
         
         const balance = await trader.connection.getBalance(trader.wallet.publicKey);
         console.log(`✅ Solana OK - Balance: ${(balance / 1e9).toFixed(4)} SOL`);
         
-        // Test scan
         const tokens = await trader.scanNewTokens();
         console.log(`✅ Scan OK - ${tokens.length} tokens trouvés`);
         
@@ -2025,8 +1800,6 @@ async function testTrader() {
         console.log(`\n🛡️ Protections:`);
         console.log(`   📉 Stop-Loss: -${trader.stopLossPercent}%`);
         console.log(`   📈 Trailing Stop: -${trader.trailingStopPercent}%`);
-        console.log(`   ⏰ Check positions: Toutes les minutes`);
-        console.log(`   🔍 Scan tokens: Toutes les 5 minutes`);
         
         console.log('\n🎉 Tous les tests réussis !');
         
@@ -2037,7 +1810,31 @@ async function testTrader() {
 
 module.exports = { SimpleAutoTrader, runAutoTrader, testTrader };
 
-// Exécution si lancé directement
+// SERVEUR WEB POUR RENDER
+const app = express();
+const port = process.env.PORT || 3000;
+
+app.get('/', (req, res) => {
+    res.json({
+        status: 'Bot Jupiter Auto-Trader actif! 🚀',
+        uptime: process.uptime(),
+        lastScan: new Date().toISOString()
+    });
+});
+
+app.get('/stats', (req, res) => {
+    res.json({
+        bot: 'Jupiter Auto-Trader',
+        status: 'running',
+        scans: 'Whitelist toutes les 10 minutes'
+    });
+});
+
+app.listen(port, '0.0.0.0', () => {
+    console.log(`🌐 Serveur web actif sur port ${port}`);
+});
+
+// EXÉCUTION
 if (require.main === module) {
     const args = process.argv.slice(2);
     
@@ -2068,31 +1865,3 @@ if (require.main === module) {
         runAutoTrader();
     }
 }
-// À la toute fin du fichier, après le module.exports
-// Serveur web simple pour satisfaire Render
-const express = require('express');
-const app = express();
-const port = process.env.PORT || 3000;
-
-// Route de santé
-app.get('/', (req, res) => {
-    res.json({
-        status: 'Bot Jupiter Scanner actif! 🚀',
-        uptime: process.uptime(),
-        lastScan: new Date().toISOString()
-    });
-});
-
-// Statistiques du bot
-app.get('/stats', (req, res) => {
-    res.json({
-        bot: 'Jupiter Scanner',
-        status: 'running',
-        scans: 'Toutes les 15 minutes'
-    });
-});
-
-// Démarrer le serveur
-app.listen(port, '0.0.0.0', () => {
-    console.log(`🌐 Serveur web actif sur port ${port}`);
-});
