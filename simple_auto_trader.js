@@ -18,7 +18,8 @@ class SimpleAutoTrader {
                 process.env.DISCORD_TOKEN,
                 process.env.DISCORD_CHANNEL_ID
             );
-        
+
+        this.discordNotifications.trader = this; // Référence pour le bouton
         // Configuration Solana avec RPC sécurisé
         const rpcUrls = [
             'https://api.mainnet-beta.solana.com',
@@ -766,8 +767,12 @@ showPerformanceRecapConsole() {
             
             position.lastKnownPrice = currentPrice;
             
-            console.log(`   💎 ${position.symbol}: ${changePercent > 0 ? '+' : ''}${changePercent.toFixed(1)}% (${((holdTime) / (1000 * 60)).toFixed(0)}min)`);
-            
+            const holdTimeMin = ((holdTime) / (1000 * 60)).toFixed(0);
+            const maxInfo = position.highestPercent > 0 
+                ? ` | Max: ${position.highestPercent > 0 ? '+' : ''}${position.highestPercent.toFixed(1)}%`
+                : '';
+
+console.log(`   💎 ${position.symbol}: ${changePercent > 0 ? '+' : ''}${changePercent.toFixed(1)}% (${holdTimeMin}min)${maxInfo}`);
             // 1. VÉRIFIER STOP-LOSS
             if (changePercent <= -this.stopLossPercent) {
                 console.log(`🛑 Stop-Loss déclenché: ${position.symbol} (${changePercent.toFixed(1)}%)`);
@@ -1019,14 +1024,14 @@ showPerformanceRecapConsole() {
                 const totalProfitPercent = ((totalSolReceived / position.solSpent) - 1) * 100;
                 
                 // Déterminer le résultat pour le système de cooldown
-                let tradeResult;
-                if (totalProfitPercent > 10) {
-                    tradeResult = 'profit';
-                } else if (totalProfitPercent < -5) {
-                    tradeResult = 'loss';
-                } else {
-                    tradeResult = 'breakeven';
-                }
+                                    let tradeResult;
+                    if (totalProfitPercent > 0) {
+                        tradeResult = 'profit';
+                    } else if (totalProfitPercent < 0) {
+                        tradeResult = 'loss';
+                    } else {
+                        tradeResult = 'breakeven';
+                    }
                 
                 // METTRE À JOUR LES STATISTIQUES
                 this.updateStatsOnSell(totalSolReceived, position.solSpent, totalProfitPercent, position.buyTime, position.symbol, tradeResult);

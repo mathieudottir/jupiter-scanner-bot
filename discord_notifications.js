@@ -1,5 +1,7 @@
 // discord_notifications.js - Module Discord et notifications
-const { Client, GatewayIntentBits, EmbedBuilder } = require('discord.js');
+
+const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
+
 
 class DiscordNotifications {
     constructor(discordToken, channelId) {
@@ -13,23 +15,120 @@ class DiscordNotifications {
 
     // INITIALISATION DISCORD
     async initialize() {
-        try {
-            console.log('🤖 Connexion à Discord...');
-            await this.client.login(this.discordToken);
-            
-            this.client.once('ready', () => {
-                console.log(`✅ Bot connecté: ${this.client.user.tag}`);
-                this.isConnected = true;
-            });
-            
-            return true;
-        } catch (error) {
-            console.error('❌ Erreur connexion Discord:', error.message);
-            this.isConnected = false;
-            return false;
-        }
-    }
+    try {
+        console.log('🤖 Connexion à Discord...');
+        await this.client.login(this.discordToken);
+        
+        this.client.once('ready', () => {
+            console.log(`✅ Bot connecté: ${this.client.user.tag}`);
+            this.isConnected = true;
+        });
 
+        // ✅ NOUVEAU: Écouter les interactions de boutons
+        this.client.on('interactionCreate', async (interaction) => {
+            if (!interaction.isButton()) return;
+            
+            // Vérifier que c'est notre bouton "vendre tout"
+            if (interaction.customId === 'sell_all_positions') {
+                await this.handleSellAllButton(interaction);
+            }
+        });
+        
+        return true;
+    } catch (error) {
+        console.error('❌ Erreur connexion Discord:', error.message);
+        this.isConnected = false;
+        return false;
+    }
+}
+        async handleSellAllButton(interaction) {
+    try {
+        // Déférer la réponse (on a 3 secondes pour répondre)
+        await interaction.deferReply({ ephemeral: true });
+        
+        console.log(`🔴 BOUTON VENDRE TOUT pressé par ${interaction.user.username}`);
+        
+        // Récupérer les positions du trader (il faut passer la référence)
+        if (!this.trader || !this.trader.positions || this.trader.positions.size === 0) {
+            await interaction.editReply({
+                content: '❌ Aucune position active à vendre'
+            });
+            return;
+        }
+        
+        const positionsCount = this.trader.positions.size;
+        
+        // Confirmer l'action
+        await interaction.editReply({
+            content: `🔴 **VENTE D'URGENCE DÉCLENCHÉE**\n\n` +
+                    `📊 ${positionsCount} position(s) en cours de vente...\n` +
+                    `⏱️ Cela peut prendre quelques minutes`
+        });
+        
+        // Déclencher la vente de toutes les positions
+        let soldCount = 0;
+        const positions = Array.from(this.trader.positions.entries());
+        
+        for (const [tokenAddress, position] of positions) {
+            try {
+                console.log(`🔴 Vente forcée: ${position.symbol}`);
+                
+                // Obtenir le prix actuel
+                const response = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${tokenAddress}`);
+                let currentPrice = position.buyPrice; // Fallback
+                
+                if (response.ok) {
+                    const data = await response.json();
+                    const pair = data.pairs?.find(p => p.chainId === 'solana');
+                    if (pair) {
+                        currentPrice = parseFloat(pair.priceUsd || position.buyPrice);
+                    }
+                }
+                
+                // Vendre la position entière
+                const success = await this.trader.sellEntirePosition(
+                    position, 
+                    currentPrice, 
+                    "VENTE MANUELLE DISCORD"
+                );
+                
+                if (success) {
+                    soldCount++;
+                }
+                
+                // Attendre entre les ventes
+                await new Promise(resolve => setTimeout(resolve, 3000));
+                
+            } catch (error) {
+                console.error(`❌ Erreur vente ${position.symbol}:`, error.message);
+            }
+        }
+        
+        // Rapport final
+        const embed = new EmbedBuilder()
+            .setColor(soldCount === positionsCount ? 0x00ff00 : 0xff9900)
+            .setTitle('🔴 RAPPORT VENTE D\'URGENCE')
+            .addFields(
+                {
+                    name: '📊 Résultats',
+                    value: `Positions vendues: ${soldCount}/${positionsCount}\n` +
+                           `Positions restantes: ${this.trader.positions.size}`,
+                    inline: false
+                }
+            )
+            .setTimestamp();
+            
+        await interaction.followUp({
+            embeds: [embed]
+        });
+        
+    } catch (error) {
+        console.error('❌ Erreur bouton vendre tout:', error.message);
+        await interaction.editReply({
+            content: '❌ Erreur lors de la vente des positions'
+        }).catch(() => {});
+    }
+}
     // RÉCAP PERFORMANCE DISCORD
     async sendPerformanceRecap(stats, positions) {
     if (!this.isConnected) {
@@ -117,10 +216,20 @@ class DiscordNotifications {
                 inline: false
             });
         }
+            const sellAllButton = new ActionRowBuilder()
+        .addComponents(
+            new ButtonBuilder()
+                .setCustomId('sell_all_positions')
+                .setLabel('🔴 VENDRE TOUT')
+                .setStyle(ButtonStyle.Danger)
+                .setDisabled(positions.size === 0) // Désactivé si pas de positions
+        );
 
-        await channel.send({
-            embeds: [embed]
-        });
+    await channel.send({
+        embeds: [embed],
+        components: positions.size > 0 ? [sellAllButton] : [] // Ajouter bouton si positions actives
+    });
+        
         
         console.log('📊 Récap performance envoyé sur Discord');
         
