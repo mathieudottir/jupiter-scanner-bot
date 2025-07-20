@@ -844,7 +844,7 @@ showPerformanceRecapConsole() {
         try {
             const tokenMint = position.tokenAddress;
             
-            await this.waitForRateLimit();
+            await this.jupiterAPI.waitForRateLimit();
             const tokenAccounts = await this.connection.getParsedTokenAccountsByOwner(
                 this.wallet.publicKey,
                 { mint: new PublicKey(tokenMint) }
@@ -937,7 +937,7 @@ showPerformanceRecapConsole() {
             const tokenMint = position.tokenAddress;
             const solMint = 'So11111111111111111111111111111111111111112';
             
-            await this.waitForRateLimit();
+            await this.jupiterAPI.waitForRateLimit();
             const tokenAccounts = await this.connection.getParsedTokenAccountsByOwner(
                 this.wallet.publicKey,
                 { mint: new PublicKey(tokenMint) }
