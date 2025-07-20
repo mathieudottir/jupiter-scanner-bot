@@ -5,6 +5,7 @@ const DiscordNotifications = require('./discord_notifications'); // ← Cette li
 const { Connection, Keypair, PublicKey, VersionedTransaction } = require('@solana/web3.js');
 const bs58 = require('bs58');
 const express = require('express');
+const TradeLogger = require('./trade_logger');
 const JupiterAPI = require('./jupiter_api')
 
 
@@ -52,7 +53,7 @@ class SimpleAutoTrader {
         this.backupConnections, 
         this.maxSlippage
 );
-
+        this.tradeLogger = new TradeLogger();
         // WHITELIST - Chargement depuis fichier
         this.whitelistedTokens = {};
         this.whitelistPath = './whitelist.json';
@@ -548,6 +549,28 @@ class SimpleAutoTrader {
                 };
                 
                 this.positions.set(tokenAddress, position);
+
+                        const buyTradeData = {
+                            type: 'BUY',
+                            timestamp: Date.now(),
+                            symbol: symbol,
+                            tokenAddress: tokenAddress,
+                            priceUSD: price,
+                            solInvested: dynamicBuyAmount,
+                            tokensReceived: tokenAmount,
+                            momentum1h: tokenData.priceChange?.h1 || 0,
+                            momentum24h: tokenData.priceChange?.h24 || 0,
+                            volume24h: tokenData.volume?.h24 || 0,
+                            liquidityUSD: tokenData.liquidity?.usd || 0,
+                            category: this.getCategoryFromSymbol(symbol),
+                            confidence: 'HIGH',
+                            reason: 'Whitelist momentum',
+                            txHash: txid,
+                            activePositions: this.positions.size,
+                            sessionProfit: this.stats.session.profitSOL
+                        };
+
+await this.tradeLogger.logTrade(buyTradeData);
                 
                 // METTRE À JOUR LES STATISTIQUES
                 this.updateStatsOnBuy(dynamicBuyAmount, symbol);
@@ -806,10 +829,49 @@ showPerformanceRecapConsole() {
                         position.currentAmount = remainingAmount - amountToSell;
                         
                         if (position.currentAmount <= position.buyAmount * 0.01) {
-                            console.log(`✅ Position ${position.symbol} entièrement vendue`);
-                            this.positions.delete(position.tokenAddress);
-                            break;
-                        }
+    console.log(`✅ Position ${position.symbol} entièrement vendue par ventes échelonnées`);
+    
+    // Calculer les totaux pour le logging
+    const totalSolReceived = position.totalSolReceived;
+    const totalProfit = totalSolReceived - position.solSpent;
+    const totalProfitPercent = ((totalSolReceived / position.solSpent) - 1) * 100;
+    
+    const sellTradeData = {
+        type: 'SELL',
+        timestamp: Date.now(),
+        symbol: position.symbol,
+        tokenAddress: position.tokenAddress,
+        buyData: {
+            priceUSD: position.buyPrice,
+            solInvested: position.solSpent,
+            tokensReceived: position.buyAmount,
+            category: this.getCategoryFromSymbol(position.symbol),
+            confidence: 'HIGH',
+            txHash: position.buyTxid,
+            buyTime: position.buyTime
+        },
+        totalSolReceived: totalSolReceived,
+        totalProfit: totalProfit,
+        totalProfitPercent: totalProfitPercent,
+        sellPriceUSD: currentPrice,
+        duration: Date.now() - position.buyTime,
+        exitReason: "Ventes échelonnées complètes",
+        partialSells: position.partialSells || 0,
+        highestPrice: position.highestPrice || position.buyPrice,
+        highestPercent: position.highestPercent || 0,
+        txHashes: [] // Pas de TX spécifique car c'est la fin des ventes échelonnées
+    };
+
+    await this.tradeLogger.logTrade(sellTradeData);
+    
+    // Marquer comme traité et supprimer
+    const tradeResult = totalProfitPercent > 10 ? 'profit' : totalProfitPercent < -5 ? 'loss' : 'breakeven';
+    this.markTokenAsProcessed(position.tokenAddress, tradeResult);
+    this.updateStatsOnSell(totalSolReceived, position.solSpent, totalProfitPercent, position.buyTime, position.symbol, tradeResult);
+    
+    this.positions.delete(position.tokenAddress);
+    break;
+}
                     } else if (isMoonshot) {
                         position.sellsExecuted.push(level.profit);
                     }
@@ -920,6 +982,22 @@ showPerformanceRecapConsole() {
                 
                 position.totalSolReceived += solReceived;
                 position.partialSells += 1;
+                const partialSellData = {
+                            type: 'PARTIAL_SELL',
+                            timestamp: Date.now(),
+                            symbol: position.symbol,
+                            tokenAddress: position.tokenAddress,
+                            priceUSD: currentPrice,
+                            solReceived: solReceived,
+                            profitSOL: partialProfit,
+                            profitPercent: partialProfitPercent,
+                            percentage: level.percentage,
+                            reason: level.reason,
+                            txHash: txid,
+                            currentHoldTime: Date.now() - position.buyTime
+                        };
+
+await this.tradeLogger.logTrade(partialSellData);
                 
                 return true;
             }
@@ -943,21 +1021,89 @@ showPerformanceRecapConsole() {
                 { mint: new PublicKey(tokenMint) }
             );
             
-            if (tokenAccounts.value.length === 0) {
-                this.markTokenAsProcessed(position.tokenAddress, 'loss');
-                this.positions.delete(position.tokenAddress);
-                return false;
-            }
+           if (tokenAccounts.value.length === 0) {
+    console.log(`⚠️ Aucun token trouvé dans le wallet pour ${position.symbol}`);
+    
+    const totalSolReceived = position.totalSolReceived || 0;
+    const totalProfit = totalSolReceived - position.solSpent;
+    const totalProfitPercent = totalSolReceived > 0 ? ((totalSolReceived / position.solSpent) - 1) * 100 : -100;
+    
+    const sellTradeData = {
+        type: 'SELL',
+        timestamp: Date.now(),
+        symbol: position.symbol,
+        tokenAddress: position.tokenAddress,
+        buyData: {
+            priceUSD: position.buyPrice,
+            solInvested: position.solSpent,
+            tokensReceived: position.buyAmount,
+            category: this.getCategoryFromSymbol(position.symbol),
+            confidence: 'HIGH',
+            txHash: position.buyTxid,
+            buyTime: position.buyTime
+        },
+        totalSolReceived: totalSolReceived,
+        totalProfit: totalProfit,
+        totalProfitPercent: totalProfitPercent,
+        sellPriceUSD: currentPrice,
+        duration: Date.now() - position.buyTime,
+        exitReason: reason + " (Aucun token dans wallet)",
+        partialSells: position.partialSells || 0,
+        highestPrice: position.highestPrice || position.buyPrice,
+        highestPercent: position.highestPercent || 0,
+        txHashes: []
+    };
+
+    await this.tradeLogger.logTrade(sellTradeData);
+    
+    this.markTokenAsProcessed(position.tokenAddress, 'loss');
+    this.positions.delete(position.tokenAddress);
+    return false;
+}
             
             const realBalance = parseFloat(tokenAccounts.value[0].account.data.parsed.info.tokenAmount.amount);
             const amountToSell = Math.floor(realBalance * 0.99);
             
             if (amountToSell <= 0) {
-                const tradeResult = position.totalSolReceived > 0 ? 'profit' : 'breakeven';
-                this.markTokenAsProcessed(position.tokenAddress, tradeResult);
-                this.positions.delete(position.tokenAddress);
-                return false;
-            }
+    console.log(`⚠️ Montant à vendre trop petit pour ${position.symbol}`);
+    
+    const totalSolReceived = position.totalSolReceived || 0;
+    const totalProfit = totalSolReceived - position.solSpent;
+    const totalProfitPercent = totalSolReceived > 0 ? ((totalSolReceived / position.solSpent) - 1) * 100 : 0;
+    const tradeResult = totalSolReceived > position.solSpent * 1.1 ? 'profit' : 'breakeven';
+    
+    const sellTradeData = {
+        type: 'SELL',
+        timestamp: Date.now(),
+        symbol: position.symbol,
+        tokenAddress: position.tokenAddress,
+        buyData: {
+            priceUSD: position.buyPrice,
+            solInvested: position.solSpent,
+            tokensReceived: position.buyAmount,
+            category: this.getCategoryFromSymbol(position.symbol),
+            confidence: 'HIGH',
+            txHash: position.buyTxid,
+            buyTime: position.buyTime
+        },
+        totalSolReceived: totalSolReceived,
+        totalProfit: totalProfit,
+        totalProfitPercent: totalProfitPercent,
+        sellPriceUSD: currentPrice,
+        duration: Date.now() - position.buyTime,
+        exitReason: reason + " (Montant résiduel trop petit)",
+        partialSells: position.partialSells || 0,
+        highestPrice: position.highestPrice || position.buyPrice,
+        highestPercent: position.highestPercent || 0,
+        txHashes: []
+    };
+
+    await this.tradeLogger.logTrade(sellTradeData);
+    
+    this.markTokenAsProcessed(position.tokenAddress, tradeResult);
+    this.positions.delete(position.tokenAddress);
+    return false;
+}
             
             const sellQuote = await this.jupiterAPI.getJupiterQuote(tokenMint, solMint, amountToSell);
             if (!sellQuote) return false;
@@ -998,6 +1144,33 @@ showPerformanceRecapConsole() {
                 await this.discordNotifications.notifyFinalSell(position, totalSolReceived, totalProfit, totalProfitPercent, reason, txid);
                 
                 this.positions.delete(position.tokenAddress);
+                const sellTradeData = {
+                            type: 'SELL',
+                            timestamp: Date.now(),
+                            symbol: position.symbol,
+                            tokenAddress: position.tokenAddress,
+                            buyData: {
+                                priceUSD: position.buyPrice,
+                                solInvested: position.solSpent,
+                                tokensReceived: position.buyAmount,
+                                category: this.getCategoryFromSymbol(position.symbol),
+                                confidence: 'HIGH',
+                                txHash: position.buyTxid,
+                                buyTime: position.buyTime
+                            },
+                            totalSolReceived: totalSolReceived,
+                            totalProfit: totalProfit,
+                            totalProfitPercent: totalProfitPercent,
+                            sellPriceUSD: currentPrice,
+                            duration: Date.now() - position.buyTime,
+                            exitReason: reason,
+                            partialSells: position.partialSells || 0,
+                            highestPrice: position.highestPrice || position.buyPrice,
+                            highestPercent: position.highestPercent || 0,
+                            txHashes: [txid]
+                        };
+
+                        await this.tradeLogger.logTrade(sellTradeData);
                 
                 // Invalider le cache SOL
                 const cacheKey = `${solMint}_${this.wallet.publicKey.toString()}`;
@@ -1147,6 +1320,25 @@ showPerformanceRecapConsole() {
                 console.error('❌ Erreur scan whitelist:', error.message);
             }
         }, 10 * 60 * 1000);
+
+                    const dailyReportTimer = setInterval(async () => {
+                try {
+                    const now = new Date();
+                    if (now.getHours() === 0 && now.getMinutes() < 10) {
+                        console.log('\n📊 GÉNÉRATION RAPPORT JOURNALIER');
+                        await this.generateAndShowDailyReport();
+                        
+                        // Insights hebdomadaires (le dimanche)
+                        if (now.getDay() === 0) {
+                            console.log('\n🧠 INSIGHTS HEBDOMADAIRES');
+                            await this.showOptimizationInsights();
+                            await this.exportAnalytics();
+                        }
+                    }
+                } catch (error) {
+                    console.error('❌ Erreur rapport journalier:', error.message);
+                }
+            }, 10 * 60 * 1000); // Check toutes les 10 minutes
         
         // Scan initial avec récap
         try {
@@ -1163,23 +1355,51 @@ showPerformanceRecapConsole() {
         }
         
         // Gestion arrêt propre
-        process.on('SIGINT', () => {
-            console.log('\n🛑 Arrêt demandé...');
-            clearInterval(positionCheckTimer);
-            clearInterval(scanTimer);
-            clearInterval(performanceTimer);
-            console.log('✅ Timers arrêtés');
-            
-
-            
-            process.exit(0);
-        });
+                    process.on('SIGINT', () => {
+                console.log('\n🛑 Arrêt demandé...');
+                clearInterval(positionCheckTimer);
+                clearInterval(scanTimer);
+                clearInterval(performanceTimer);
+                clearInterval(dailyReportTimer);
+                console.log('✅ Timers arrêtés');
+                
+                process.exit(0);
+            });
         
         // Boucle principale pour maintenir le processus
         while (true) {
             await new Promise(resolve => setTimeout(resolve, 60000));
         }
     }
+
+    async generateAndShowDailyReport() {
+    try {
+        const report = await this.tradeLogger.generateDailyReport();
+        return report;
+    } catch (error) {
+        console.error('❌ Erreur génération rapport:', error.message);
+    }
+}
+
+// INSIGHTS STRATÉGIQUES
+async showOptimizationInsights() {
+    try {
+        const insights = await this.tradeLogger.getOptimizationInsights();
+        return insights;
+    } catch (error) {
+        console.error('❌ Erreur insights:', error.message);
+    }
+}
+
+// EXPORT ANALYTICS
+async exportAnalytics() {
+    try {
+        await this.tradeLogger.exportAnalyticsToCSV();
+        console.log('📊 Analytics exportées vers CSV');
+    } catch (error) {
+        console.error('❌ Erreur export analytics:', error.message);
+    }
+}
 }
 
 // FONCTIONS D'UTILISATION
@@ -1284,6 +1504,9 @@ if (require.main === module) {
         console.log('Usage:');
         console.log('  node simple_auto_trader.js         - Lancer auto-trading');
         console.log('  node simple_auto_trader.js --test  - Tester config');
+        console.log('  node simple_auto_trader.js --report       - Rapport journalier');
+        console.log('  node simple_auto_trader.js --insights     - Insights stratégiques');
+        console.log('  node simple_auto_trader.js --export       - Export analytics CSV');
         console.log('');
         console.log('Variables .env requises:');
         console.log('  DISCORD_TOKEN=...');
@@ -1300,6 +1523,27 @@ if (require.main === module) {
         console.log('  Stop-Loss: -20% | Trailing: -15%');
         console.log('');
         
-        runAutoTrader();
+                if (args.includes('--report')) {
+            (async () => {
+                const trader = new SimpleAutoTrader();
+                await trader.generateAndShowDailyReport();
+            })();
+        } else if (args.includes('--insights')) {
+            (async () => {
+                const trader = new SimpleAutoTrader();
+                await trader.showOptimizationInsights();
+            })();
+        } else if (args.includes('--export')) {
+            (async () => {
+                const trader = new SimpleAutoTrader();
+                await trader.exportAnalytics();
+            })();
+        } else if (args.includes('--test')) {
+            testTrader();
+        } else {
+            runAutoTrader();
+        }
+
+        
     }
 }
