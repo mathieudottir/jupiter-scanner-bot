@@ -10,11 +10,11 @@ class JupiterAPI {
         
         // Rate limiting
         this.lastRpcCall = 0;
-        this.rpcCallDelay = 2000;
+        this.rpcCallDelay = 5000;
         
         // Cache pour les soldes
         this.balanceCache = new Map();
-        this.cacheTimeout = 60000;
+        this.cacheTimeout = 120000;
     }
 
     // RATE LIMITING

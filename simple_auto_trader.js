@@ -715,7 +715,7 @@ updateStatsOnSell(solReceived, solSpent, profitPercent, buyTime, symbol, result)
         for (const [tokenAddress, position] of this.positions.entries()) {
             try {
                 await this.checkSinglePosition(tokenAddress, position);
-                await new Promise(resolve => setTimeout(resolve, 1000));
+                await new Promise(resolve => setTimeout(resolve, 3000)); // 3s entre positions
             } catch (error) {
                 console.error(`❌ Erreur check position ${position.symbol}: ${error.message}`);
             }
@@ -1049,7 +1049,7 @@ showPerformanceRecapConsole() {
                 
                 // Invalider le cache SOL
                 const cacheKey = `${solMint}_${this.wallet.publicKey.toString()}`;
-                this.balanceCache.delete(cacheKey);
+                this.jupiterAPI.invalidateBalanceCache('So11111111111111111111111111111111111111112');
                 
                 return true;
             }
