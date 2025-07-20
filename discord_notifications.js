@@ -155,135 +155,69 @@ class DiscordNotifications {
     console.log('═'.repeat(80));
 }
 
+    // NOTIFICATION ACHAT
+// NOTIFICATION ACHAT - VERSION DEBUG
     async notifyBuy(position, tokenData, sellLevels, stopLossPercent) {
-
-
-        if (!this.isConnected) return;
-
-
-
-
-
-        try {
-
-
-            const channel = await this.client.channels.fetch(this.channelId);
-
-
-            if (!channel) return;
-
-
-            
-
-
-            const embed = new EmbedBuilder()
-
-
-                .setColor(0x00ff00)
-
-
-                .setTitle(`🛡️ ACHAT SÉCURISÉ - ${position.symbol}`)
-
-
-                .setDescription(`**Token whitelist vérifié acheté**`)
-
-
-                .addFields(
-
-
-                    {
-
-
-                        name: '💰 Détails achat',
-
-
-                        value: `Prix: ${position.buyPrice.toFixed(6)}\nQuantité: ${position.buyAmount.toLocaleString()}\nInvesti: ${position.solSpent} SOL`,
-
-
-                        inline: true
-
-
-                    },
-
-
-                    {
-
-
-                        name: '📊 Performance',
-
-
-                        value: `1h: +${tokenData.priceChange?.h1?.toFixed(1) || 'N/A'}%\n24h: +${tokenData.priceChange?.h24?.toFixed(1) || 'N/A'}%`,
-
-
-                        inline: true
-
-
-                    },
-
-
-                    {
-
-
-                        name: '🎯 Stratégie',
-
-
-                        value: `Ventes: +${sellLevels[0].profit}% (${sellLevels[0].percentage}%), +${sellLevels[1].profit}% (${sellLevels[1].percentage}%), +${sellLevels[2].profit}% (${sellLevels[2].percentage}%), +${sellLevels[3].profit}% (${sellLevels[3].percentage}%)\nStop-Loss: -${stopLossPercent}%`,
-
-
-                        inline: false
-
-
-                    },
-
-
-                    {
-
-
-                        name: '🔗 Liens',
-
-
-                        value: `[📊 DexScreener](https://dexscreener.com/solana/${position.tokenAddress}) | [🔍 TX Achat](https://solscan.io/tx/${position.buyTxid})`,
-
-
-                        inline: false
-
-
-                    }
-
-
-                )
-
-
-                .setTimestamp();
-
-
-            
-
-
-            await channel.send({
-
-
-                content: `🛡️ **ACHAT SÉCURISÉ** 🛡️\n${position.symbol} - Token whitelist vérifié !`,
-
-
-                embeds: [embed]
-
-
-            });
-
-
-            
-
-
-        } catch (error) {
-
-
-            console.error('❌ Erreur notification achat:', error.message);
-
-
+        console.log(`🔔 notifyBuy appelé pour ${position.symbol}`);
+        console.log(`🤖 Discord connecté: ${this.isConnected}`);
+        
+        if (!this.isConnected) {
+            console.log(`❌ Discord non connecté - notification ignorée`);
+            return;
         }
 
-
+        try {
+            console.log(`📡 Tentative récupération channel: ${this.channelId}`);
+            const channel = await this.client.channels.fetch(this.channelId);
+            
+            if (!channel) {
+                console.log(`❌ Channel introuvable: ${this.channelId}`);
+                return;
+            }
+            
+            console.log(`✅ Channel trouvé: ${channel.name}`);
+            
+            const embed = new EmbedBuilder()
+                .setColor(0x00ff00)
+                .setTitle(`🛡️ ACHAT SÉCURISÉ - ${position.symbol}`)
+                .setDescription(`**Token whitelist vérifié acheté**`)
+                .addFields(
+                    {
+                        name: '💰 Détails achat',
+                        value: `Prix: ${position.buyPrice.toFixed(6)}\nQuantité: ${position.buyAmount.toLocaleString()}\nInvesti: ${position.solSpent} SOL`,
+                        inline: true
+                    },
+                    {
+                        name: '📊 Performance',
+                        value: `1h: +${tokenData.priceChange?.h1?.toFixed(1) || 'N/A'}%\n24h: +${tokenData.priceChange?.h24?.toFixed(1) || 'N/A'}%`,
+                        inline: true
+                    },
+                    {
+                        name: '🎯 Stratégie',
+                        value: `Ventes: +${sellLevels[0].profit}% (${sellLevels[0].percentage}%), +${sellLevels[1].profit}% (${sellLevels[1].percentage}%), +${sellLevels[2].profit}% (${sellLevels[2].percentage}%), +${sellLevels[3].profit}% (${sellLevels[3].percentage}%)\nStop-Loss: -${stopLossPercent}%`,
+                        inline: false
+                    },
+                    {
+                        name: '🔗 Liens',
+                        value: `[📊 DexScreener](https://dexscreener.com/solana/${position.tokenAddress}) | [🔍 TX Achat](https://solscan.io/tx/${position.buyTxid})`,
+                        inline: false
+                    }
+                )
+                .setTimestamp();
+            
+            console.log(`📤 Envoi message Discord...`);
+            
+            const sentMessage = await channel.send({
+                content: `🛡️ **ACHAT SÉCURISÉ** 🛡️\n${position.symbol} - Token whitelist vérifié !`,
+                embeds: [embed]
+            });
+            
+            console.log(`✅ Message Discord envoyé: ${sentMessage.id}`);
+            
+        } catch (error) {
+            console.error('❌ Erreur notification achat:', error.message);
+            console.error('🔍 Stack trace:', error.stack);
+        }
     }
     // NOTIFICATION VENTE PARTIELLE
     async notifyPartialSell(position, solReceived, profit, profitPercent, level, txid) {
