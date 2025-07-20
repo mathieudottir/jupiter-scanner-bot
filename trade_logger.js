@@ -1,6 +1,8 @@
 // trade_logger.js - Module de logging et analytics des trades
+
 const fs = require('fs').promises;
 const path = require('path');
+const nodemailer = require('nodemailer'); // ← Doit être ICI, pas dans le constructeur
 
 class TradeLogger {
     constructor() {
@@ -9,6 +11,71 @@ class TradeLogger {
         this.tradesFile = path.join(this.logsDir, `trades_${this.currentYear}.json`);
         this.csvFile = path.join(this.logsDir, `trades_${this.currentYear}.csv`);
         this.analyticsFile = path.join(this.logsDir, 'analytics_summary.json');
+
+        // Configuration email backup
+        this.emailConfig = {
+            enabled: process.env.EMAIL_BACKUP === 'true',
+            service: process.env.EMAIL_SERVICE || 'gmail',
+            user: process.env.EMAIL_USER,
+            pass: process.env.EMAIL_PASS,
+            to: process.env.EMAIL_TO
+        };
+        
+        // AJOUTEZ ces lignes de debug dans le constructeur
+        console.log('🔍 DEBUG CONFIG:');
+        console.log('   enabled:', this.emailConfig.enabled);
+        console.log('   user:', this.emailConfig.user);
+        console.log('   pass:', this.emailConfig.pass);
+        console.log('   condition complète:', this.emailConfig.enabled && this.emailConfig.user && this.emailConfig.pass);
+        
+        // Initialiser le transporteur email
+        if (this.emailConfig.enabled && this.emailConfig.user && this.emailConfig.pass) {
+            try {
+                console.log(`📧 Configuration email:`);
+                console.log(`   Service: ${this.emailConfig.service}`);
+                console.log(`   User: ${this.emailConfig.user}`);
+                console.log(`   To: ${this.emailConfig.to}`);
+                
+                // FIX: Utiliser createTransport (pas createTransporter)
+                this.emailTransporter = nodemailer.createTransport({
+                    host: 'smtp.mail.yahoo.com',
+                    port: 587,
+                    secure: false,
+                    auth: {
+                        user: this.emailConfig.user,
+                        pass: this.emailConfig.pass
+                    },
+                    tls: {
+                        rejectUnauthorized: false
+                    }
+                });
+                
+                console.log(`📧 Email backup activé: ${this.emailConfig.to}`);
+                
+                // Test de connexion
+                this.emailTransporter.verify((error, success) => {
+                    if (error) {
+                        console.log('❌ Erreur config email:', error.message);
+                        this.emailConfig.enabled = false;
+                    } else {
+                        console.log('✅ Email transporteur prêt');
+                        this.setupEmailBackupTimers();
+                    }
+                });
+                
+            } catch (error) {
+                console.log('❌ Erreur init email:', error.message);
+                this.emailConfig.enabled = false;
+            }
+
+        } else {
+            console.log('📧 Email backup désactivé - Variables manquantes:');
+            console.log(`   EMAIL_BACKUP: ${process.env.EMAIL_BACKUP}`);
+            console.log(`   EMAIL_SERVICE: ${process.env.EMAIL_SERVICE}`);
+            console.log(`   EMAIL_USER: ${process.env.EMAIL_USER}`);
+            console.log(`   EMAIL_PASS: ${process.env.EMAIL_PASS ? 'SET' : 'MISSING'}`);
+            console.log(`   EMAIL_TO: ${process.env.EMAIL_TO}`);
+        }
         
         // Cache pour éviter les lectures répétées
         this.tradesCache = new Map();
@@ -18,13 +85,227 @@ class TradeLogger {
         this.initializeLogger();
     }
 
+    // MÉTHODES EMAIL BACKUP
+    setupEmailBackupTimers() {
+        console.log('⏰ Configuration des timers email...');
+        
+        // Timer backup quotidien (23h50)
+        this.dailyBackupTimer = setInterval(async () => {
+            const now = new Date();
+            if (now.getHours() === 23 && now.getMinutes() >= 50 && now.getMinutes() < 55) {
+                await this.sendDailyEmailBackup();
+            }
+        }, 5 * 60 * 1000);
+        
+        // Timer backup si beaucoup de trades (toutes les heures)
+        this.emergencyBackupTimer = setInterval(async () => {
+            try {
+                const recentTrades = await this.getRecentTrades(1);
+                if (recentTrades.length >= 5) {
+                    await this.sendEmergencyBackup(`${recentTrades.length} trades en 1h`);
+                }
+            } catch (error) {
+                console.log('⚠️ Erreur check emergency backup:', error.message);
+            }
+        }, 60 * 60 * 1000);
+        
+        console.log('✅ Timers email configurés');
+    }
+
+    async sendDailyEmailBackup() {
+        if (!this.emailConfig.enabled || !this.emailTransporter) {
+            console.log('📧 Email backup désactivé');
+            return;
+        }
+        
+        try {
+            console.log('📧 Préparation du backup quotidien...');
+            
+            const today = new Date().toISOString().slice(0, 10);
+            const todayTrades = await this.getTradesByDate(today);
+            const analytics = await this.loadAnalytics();
+            
+            const completedTrades = todayTrades.filter(t => 
+                t.type === 'COMPLETE_TRADE' || t.type === 'SELL'
+            );
+            
+            // Générer CSV du jour
+            let csvContent = 'TradeID,Symbol,Date,Heure,SOL_Investi,SOL_Recu,Profit_Pourcent,Duree_Min,Raison_Sortie,Categorie\n';
+            
+            completedTrades.forEach(trade => {
+                const date = new Date(trade.timestamp || trade.date);
+                csvContent += [
+                    trade.tradeId || '',
+                    trade.symbol || '',
+                    date.toISOString().slice(0, 10),
+                    date.toTimeString().slice(0, 5),
+                    trade.buyData?.solInvested || trade.buy?.solInvested || '',
+                    trade.totalSolReceived || trade.sell?.solReceived || '',
+                    (trade.totalProfitPercent || trade.sell?.profitPercent || 0).toFixed(2),
+                    trade.sell?.durationMinutes || '',
+                    trade.exitReason || trade.sell?.reason || '',
+                    trade.buyData?.category || trade.buy?.category || ''
+                ].map(f => `"${f}"`).join(',') + '\n';
+            });
+            
+            // Calculer les stats du jour
+            const wins = completedTrades.filter(t => (t.totalProfitPercent || t.sell?.profitPercent || 0) > 0).length;
+            const winRate = completedTrades.length > 0 ? (wins / completedTrades.length * 100).toFixed(1) : '0';
+            const totalProfit = completedTrades.reduce((sum, t) => sum + (t.totalProfit || t.sell?.profitSOL || 0), 0);
+            const totalInvested = completedTrades.reduce((sum, t) => sum + (t.buyData?.solInvested || t.buy?.solInvested || 0), 0);
+            const roi = totalInvested > 0 ? ((totalProfit / totalInvested) * 100).toFixed(1) : '0';
+            
+            // Rapport texte
+            const report = `
+🤖 JUPITER AUTO-TRADER - RAPPORT QUOTIDIEN
+═══════════════════════════════════════════════════════════
+
+📅 DATE: ${today}
+🕐 GÉNÉRÉ: ${new Date().toLocaleString('fr-FR')}
+
+📊 PERFORMANCE DU JOUR:
+━━━━━━━━━━━━━━━━━━━━━━━━
+• Trades complétés: ${completedTrades.length}
+• Trades gagnants: ${wins}
+• Win Rate: ${winRate}%
+• SOL investi: ${totalInvested.toFixed(4)} SOL
+• Profit/Perte: ${totalProfit > 0 ? '+' : ''}${totalProfit.toFixed(4)} SOL
+• ROI du jour: ${roi > 0 ? '+' : ''}${roi}%
+
+🏆 TOP 5 TRADES DU JOUR:
+━━━━━━━━━━━━━━━━━━━━━━━━
+${completedTrades
+    .sort((a, b) => (b.totalProfitPercent || b.sell?.profitPercent || 0) - (a.totalProfitPercent || a.sell?.profitPercent || 0))
+    .slice(0, 5)
+    .map((t, i) => {
+        const profit = (t.totalProfitPercent || t.sell?.profitPercent || 0);
+        const duration = t.sell?.durationMinutes || 0;
+        const emoji = profit > 20 ? '🚀' : profit > 0 ? '📈' : '📉';
+        return `${i+1}. ${emoji} ${t.symbol}: ${profit > 0 ? '+' : ''}${profit.toFixed(1)}% (${duration}min)`;
+    })
+    .join('\n') || 'Aucun trade complété aujourd\'hui'}
+
+📊 STATISTIQUES GLOBALES:
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+• Total trades: ${analytics.summary.totalTrades}
+• Win rate global: ${analytics.summary.winRate.toFixed(1)}%
+• Profit total: ${analytics.summary.totalProfit > 0 ? '+' : ''}${analytics.summary.totalProfit.toFixed(4)} SOL
+
+Generated by Jupiter Auto-Trader - ${new Date().toISOString()}
+            `;
+            
+            // Envoyer l'email
+            await this.emailTransporter.sendMail({
+                from: this.emailConfig.user,
+                to: this.emailConfig.to,
+                subject: `🤖 Jupiter Bot - Rapport ${today} (${completedTrades.length} trades, ${winRate}% WR)`,
+                text: report,
+                attachments: [
+                    {
+                        filename: `jupiter_trades_${today}.csv`,
+                        content: csvContent,
+                        contentType: 'text/csv'
+                    }
+                ]
+            });
+            
+            console.log(`✅ Backup quotidien envoyé: ${completedTrades.length} trades`);
+            
+        } catch (error) {
+            console.error('❌ Erreur backup email quotidien:', error.message);
+        }
+    }
+
+    async sendEmergencyBackup(reason) {
+        if (!this.emailConfig.enabled || !this.emailTransporter) return;
+        
+        try {
+            console.log(`🚨 Backup d'urgence: ${reason}`);
+            
+            const recentTrades = await this.getRecentTrades(2);
+            const analytics = await this.loadAnalytics();
+            
+            let csvContent = 'TradeID,Symbol,Type,Date,Profit%\n';
+            recentTrades.forEach(trade => {
+                csvContent += [
+                    trade.tradeId || '',
+                    trade.symbol || '',
+                    trade.type,
+                    new Date(trade.timestamp || trade.date).toISOString(),
+                    (trade.totalProfitPercent || trade.sell?.profitPercent || 0).toFixed(2)
+                ].map(f => `"${f}"`).join(',') + '\n';
+            });
+            
+            const report = `
+🚨 BACKUP D'URGENCE - Jupiter Auto-Trader
+
+Raison: ${reason}
+Timestamp: ${new Date().toLocaleString('fr-FR')}
+
+Trades récents (2h): ${recentTrades.length}
+Total trades: ${analytics.summary.totalTrades}
+Profit total: ${analytics.summary.totalProfit.toFixed(4)} SOL
+
+Voir CSV attaché pour le détail.
+            `;
+            
+            await this.emailTransporter.sendMail({
+                from: this.emailConfig.user,
+                to: this.emailConfig.to,
+                subject: `🚨 Jupiter Bot - Backup urgence (${reason})`,
+                text: report,
+                attachments: [
+                    {
+                        filename: `jupiter_emergency_${Date.now()}.csv`,
+                        content: csvContent,
+                        contentType: 'text/csv'
+                    }
+                ]
+            });
+            
+            console.log(`✅ Backup d'urgence envoyé`);
+            
+        } catch (error) {
+            console.error('❌ Erreur backup urgence:', error.message);
+        }
+    }
+
+    async sendManualBackup() {
+        await this.sendDailyEmailBackup();
+    }
+
+    async testEmailConnection() {
+        if (!this.emailConfig.enabled || !this.emailTransporter) {
+            console.log('❌ Email non configuré');
+            return false;
+        }
+        
+        try {
+            console.log('🧪 Test de connexion email...');
+            
+            await this.emailTransporter.verify();
+            console.log('✅ Connexion email OK');
+            
+            await this.emailTransporter.sendMail({
+                from: this.emailConfig.user,
+                to: this.emailConfig.to,
+                subject: '🧪 Test Jupiter Bot',
+                text: `Test de connexion email réussi !\n\nConfiguration:\n- Service: ${this.emailConfig.service}\n- From: ${this.emailConfig.user}\n- To: ${this.emailConfig.to}\n\nTimestamp: ${new Date().toLocaleString()}`
+            });
+            
+            console.log('✅ Email de test envoyé !');
+            return true;
+            
+        } catch (error) {
+            console.error('❌ Erreur test email:', error.message);
+            return false;
+        }
+    }
+
     // INITIALISATION
     async initializeLogger() {
         try {
-            // Créer le dossier logs s'il n'existe pas
             await fs.mkdir(this.logsDir, { recursive: true });
-            
-            // Créer les fichiers s'ils n'existent pas
             await this.ensureFilesExist();
             
             console.log('📊 TradeLogger initialisé');
@@ -38,26 +319,17 @@ class TradeLogger {
     }
 
     async ensureFilesExist() {
-        // Fichier trades JSON
         try {
             await fs.access(this.tradesFile);
         } catch {
             await fs.writeFile(this.tradesFile, JSON.stringify({ trades: [], metadata: { version: '1.0', created: new Date().toISOString() } }, null, 2));
         }
 
-        // Fichier analytics
         try {
             await fs.access(this.analyticsFile);
         } catch {
             const initialAnalytics = {
-                summary: {
-                    totalTrades: 0,
-                    totalProfit: 0,
-                    winRate: 0,
-                    avgHoldTime: 0,
-                    bestTrade: null,
-                    worstTrade: null
-                },
+                summary: { totalTrades: 0, totalProfit: 0, winRate: 0, avgHoldTime: 0, bestTrade: null, worstTrade: null },
                 patterns: {},
                 lastUpdate: new Date().toISOString()
             };
@@ -69,20 +341,11 @@ class TradeLogger {
     async logTrade(tradeData) {
         try {
             const trade = this.formatTradeData(tradeData);
-            
-            // Charger les trades existants
             const tradesData = await this.loadTrades();
-            
-            // Ajouter le nouveau trade
             tradesData.trades.push(trade);
-            
-            // Sauvegarder
             await fs.writeFile(this.tradesFile, JSON.stringify(tradesData, null, 2));
-            
-            // Mettre à jour le CSV
             await this.updateCSV(trade);
             
-            // Mettre à jour les analytics si c'est une vente finale
             if (trade.type === 'SELL' || trade.type === 'COMPLETE_TRADE') {
                 await this.updateAnalytics(trade);
             }
@@ -94,9 +357,7 @@ class TradeLogger {
         }
     }
 
-    // FORMATTING DES DONNÉES DE TRADE
     formatTradeData(data) {
-        const now = new Date();
         const timestamp = data.timestamp || Date.now();
         const tradeDate = new Date(timestamp);
         
@@ -111,7 +372,6 @@ class TradeLogger {
             tokenAddress: data.tokenAddress
         };
 
-        // Données spécifiques selon le type
         switch (data.type) {
             case 'BUY':
                 return {
@@ -128,11 +388,9 @@ class TradeLogger {
                         confidence: data.confidence || 'MEDIUM',
                         reason: data.reason || 'Manual',
                         txHash: data.txHash || '',
-                        slippage: data.slippage || 0,
                         marketConditions: {
                             activePositions: data.activePositions || 0,
-                            sessionProfit: data.sessionProfit || 0,
-                            hourlyVolume: data.hourlyVolume || 0
+                            sessionProfit: data.sessionProfit || 0
                         }
                     }
                 };
@@ -184,14 +442,12 @@ class TradeLogger {
         }
     }
 
-    // HELPERS
     generateTradeId(data) {
         const date = new Date(data.timestamp || Date.now());
         const dateStr = date.toISOString().slice(0, 10).replace(/-/g, '');
         const timeStr = date.toTimeString().slice(0, 8).replace(/:/g, '');
         const symbol = (data.symbol || 'UNK').slice(0, 6);
         const random = Math.random().toString(36).slice(2, 5);
-        
         return `${dateStr}_${timeStr}_${symbol}_${random}`;
     }
 
@@ -220,9 +476,6 @@ class TradeLogger {
     }
 
     gradePerformance(profitPercent, duration) {
-        const hours = duration / (1000 * 60 * 60);
-        
-        // Grading basé sur profit ET efficacité temporelle
         if (profitPercent >= 100) return 'S+';
         if (profitPercent >= 50) return 'S';
         if (profitPercent >= 30) return 'A';
@@ -232,23 +485,18 @@ class TradeLogger {
         return 'F';
     }
 
-    // CHARGEMENT DES TRADES
     async loadTrades() {
         try {
             const data = await fs.readFile(this.tradesFile, 'utf8');
             return JSON.parse(data);
         } catch (error) {
-            console.error('❌ Erreur lecture trades:', error.message);
             return { trades: [], metadata: { version: '1.0', created: new Date().toISOString() } };
         }
     }
 
-    // MISE À JOUR CSV
     async updateCSV(trade) {
         try {
             let csvContent = '';
-            
-            // Headers CSV
             const headers = [
                 'Trade ID', 'Type', 'Date', 'Day', 'Hour', 'Symbol', 'Token Address',
                 'Buy Price USD', 'SOL Invested', 'Tokens Received', 'Momentum 1h', 'Momentum 24h', 'Volume 24h', 'Liquidity USD',
@@ -256,46 +504,23 @@ class TradeLogger {
                 'Category', 'Confidence', 'Performance Grade', 'Active Positions'
             ];
             
-            // Vérifier si le fichier existe
-            let fileExists = false;
             try {
                 await fs.access(this.csvFile);
-                fileExists = true;
             } catch {
                 csvContent = headers.join(',') + '\n';
             }
             
-            // Formater les données du trade
             const row = [
-                trade.tradeId || '',
-                trade.type || '',
-                trade.date || '',
-                trade.dayOfWeek || '',
-                trade.hour || '',
-                trade.symbol || '',
-                trade.tokenAddress || '',
-                trade.buy?.priceUSD || '',
-                trade.buy?.solInvested || '',
-                trade.buy?.tokensReceived || '',
-                trade.buy?.momentum1h || '',
-                trade.buy?.momentum24h || '',
-                trade.buy?.volume24h || '',
-                trade.buy?.liquidityUSD || '',
-                trade.sell?.priceUSD || '',
-                trade.sell?.solReceived || '',
-                trade.sell?.profitSOL || '',
-                trade.sell?.profitPercent || '',
-                trade.sell?.durationMinutes || '',
-                trade.sell?.reason || '',
-                trade.buy?.category || '',
-                trade.buy?.confidence || '',
-                trade.performance?.grade || '',
-                trade.buy?.marketConditions?.activePositions || ''
+                trade.tradeId || '', trade.type || '', trade.date || '', trade.dayOfWeek || '', trade.hour || '',
+                trade.symbol || '', trade.tokenAddress || '', trade.buy?.priceUSD || '', trade.buy?.solInvested || '',
+                trade.buy?.tokensReceived || '', trade.buy?.momentum1h || '', trade.buy?.momentum24h || '',
+                trade.buy?.volume24h || '', trade.buy?.liquidityUSD || '', trade.sell?.priceUSD || '',
+                trade.sell?.solReceived || '', trade.sell?.profitSOL || '', trade.sell?.profitPercent || '',
+                trade.sell?.durationMinutes || '', trade.sell?.reason || '', trade.buy?.category || '',
+                trade.buy?.confidence || '', trade.performance?.grade || '', trade.buy?.marketConditions?.activePositions || ''
             ];
             
             csvContent += row.map(field => `"${field}"`).join(',') + '\n';
-            
-            // Append au fichier
             await fs.appendFile(this.csvFile, csvContent);
             
         } catch (error) {
@@ -303,12 +528,10 @@ class TradeLogger {
         }
     }
 
-    // ANALYTICS ET STATISTIQUES
     async updateAnalytics(trade) {
         try {
             const analytics = await this.loadAnalytics();
             
-            // Mettre à jour les stats globales
             if (trade.type === 'COMPLETE_TRADE') {
                 analytics.summary.totalTrades++;
                 analytics.summary.totalProfit += trade.sell?.profitSOL || 0;
@@ -316,66 +539,9 @@ class TradeLogger {
                 const isWin = (trade.sell?.profitPercent || 0) > 0;
                 analytics.summary.wins = (analytics.summary.wins || 0) + (isWin ? 1 : 0);
                 analytics.summary.winRate = (analytics.summary.wins / analytics.summary.totalTrades) * 100;
-                
-                // Meilleur/pire trade
-                if (!analytics.summary.bestTrade || (trade.sell?.profitPercent || 0) > analytics.summary.bestTrade.profitPercent) {
-                    analytics.summary.bestTrade = {
-                        tradeId: trade.tradeId,
-                        symbol: trade.symbol,
-                        profitPercent: trade.sell?.profitPercent || 0,
-                        date: trade.date
-                    };
-                }
-                
-                if (!analytics.summary.worstTrade || (trade.sell?.profitPercent || 0) < analytics.summary.worstTrade.profitPercent) {
-                    analytics.summary.worstTrade = {
-                        tradeId: trade.tradeId,
-                        symbol: trade.symbol,
-                        profitPercent: trade.sell?.profitPercent || 0,
-                        date: trade.date
-                    };
-                }
-            }
-            
-            // Patterns par jour de la semaine
-            if (!analytics.patterns.dayOfWeek) analytics.patterns.dayOfWeek = {};
-            const day = trade.dayOfWeek;
-            if (!analytics.patterns.dayOfWeek[day]) {
-                analytics.patterns.dayOfWeek[day] = { trades: 0, profit: 0, wins: 0 };
-            }
-            analytics.patterns.dayOfWeek[day].trades++;
-            analytics.patterns.dayOfWeek[day].profit += trade.sell?.profitSOL || 0;
-            if ((trade.sell?.profitPercent || 0) > 0) {
-                analytics.patterns.dayOfWeek[day].wins++;
-            }
-            
-            // Patterns par heure
-            if (!analytics.patterns.hourOfDay) analytics.patterns.hourOfDay = {};
-            const hour = trade.hour;
-            if (!analytics.patterns.hourOfDay[hour]) {
-                analytics.patterns.hourOfDay[hour] = { trades: 0, profit: 0, wins: 0 };
-            }
-            analytics.patterns.hourOfDay[hour].trades++;
-            analytics.patterns.hourOfDay[hour].profit += trade.sell?.profitSOL || 0;
-            if ((trade.sell?.profitPercent || 0) > 0) {
-                analytics.patterns.hourOfDay[hour].wins++;
-            }
-            
-            // Patterns par token
-            if (!analytics.patterns.tokens) analytics.patterns.tokens = {};
-            const symbol = trade.symbol;
-            if (!analytics.patterns.tokens[symbol]) {
-                analytics.patterns.tokens[symbol] = { trades: 0, profit: 0, wins: 0, avgHoldTime: 0 };
-            }
-            analytics.patterns.tokens[symbol].trades++;
-            analytics.patterns.tokens[symbol].profit += trade.sell?.profitSOL || 0;
-            if ((trade.sell?.profitPercent || 0) > 0) {
-                analytics.patterns.tokens[symbol].wins++;
             }
             
             analytics.lastUpdate = new Date().toISOString();
-            
-            // Sauvegarder
             await fs.writeFile(this.analyticsFile, JSON.stringify(analytics, null, 2));
             
         } catch (error) {
@@ -396,7 +562,17 @@ class TradeLogger {
         }
     }
 
-    // GÉNÉRATION DE RAPPORTS
+    async getTradesByDate(dateStr) {
+        const trades = await this.loadTrades();
+        return trades.trades.filter(t => t.date && t.date.startsWith(dateStr));
+    }
+
+    async getRecentTrades(hours = 24) {
+        const trades = await this.loadTrades();
+        const cutoff = Date.now() - (hours * 60 * 60 * 1000);
+        return trades.trades.filter(t => t.timestamp >= cutoff);
+    }
+
     async generateDailyReport() {
         try {
             const trades = await this.loadTrades();
@@ -414,9 +590,7 @@ class TradeLogger {
                     .filter(t => t.type === 'COMPLETE_TRADE')
                     .reduce((sum, t) => sum + (t.sell?.profitSOL || 0), 0),
                 winRate: this.calculateWinRate(todayTrades.filter(t => t.type === 'COMPLETE_TRADE')),
-                tokens: [...new Set(todayTrades.map(t => t.symbol))],
-                bestTrade: this.findBestTrade(todayTrades),
-                worstTrade: this.findWorstTrade(todayTrades)
+                tokens: [...new Set(todayTrades.map(t => t.symbol))]
             };
             
             console.log('\n📊 RAPPORT JOURNALIER');
@@ -426,14 +600,6 @@ class TradeLogger {
             console.log(`💰 Profit: ${report.totalProfit > 0 ? '+' : ''}${report.totalProfit.toFixed(4)} SOL`);
             console.log(`🏆 Win Rate: ${report.winRate.toFixed(1)}%`);
             console.log(`🪙 Tokens: ${report.tokens.join(', ')}`);
-            
-            if (report.bestTrade) {
-                console.log(`🥇 Meilleur: ${report.bestTrade.symbol} (+${report.bestTrade.profitPercent.toFixed(1)}%)`);
-            }
-            
-            if (report.worstTrade) {
-                console.log(`🥉 Pire: ${report.worstTrade.symbol} (${report.worstTrade.profitPercent.toFixed(1)}%)`);
-            }
             
             return report;
             
@@ -449,52 +615,11 @@ class TradeLogger {
         return (wins / trades.length) * 100;
     }
 
-    findBestTrade(trades) {
-        const completedTrades = trades.filter(t => t.type === 'COMPLETE_TRADE');
-        if (completedTrades.length === 0) return null;
-        
-        return completedTrades.reduce((best, current) => {
-            const currentProfit = current.sell?.profitPercent || 0;
-            const bestProfit = best.sell?.profitPercent || 0;
-            return currentProfit > bestProfit ? current : best;
-        });
-    }
-
-    findWorstTrade(trades) {
-        const completedTrades = trades.filter(t => t.type === 'COMPLETE_TRADE');
-        if (completedTrades.length === 0) return null;
-        
-        return completedTrades.reduce((worst, current) => {
-            const currentProfit = current.sell?.profitPercent || 0;
-            const worstProfit = worst.sell?.profitPercent || 0;
-            return currentProfit < worstProfit ? current : worst;
-        });
-    }
-
-    // EXPORT AVANCÉ
     async exportAnalyticsToCSV() {
         try {
             const analytics = await this.loadAnalytics();
-            
             let csvContent = 'Type,Category,Value,Trades,Profit,WinRate\n';
             
-            // Par jour de la semaine
-            if (analytics.patterns.dayOfWeek) {
-                Object.entries(analytics.patterns.dayOfWeek).forEach(([day, data]) => {
-                    const winRate = data.trades > 0 ? (data.wins / data.trades) * 100 : 0;
-                    csvContent += `Day,${day},${day},${data.trades},${data.profit.toFixed(4)},${winRate.toFixed(1)}\n`;
-                });
-            }
-            
-            // Par heure
-            if (analytics.patterns.hourOfDay) {
-                Object.entries(analytics.patterns.hourOfDay).forEach(([hour, data]) => {
-                    const winRate = data.trades > 0 ? (data.wins / data.trades) * 100 : 0;
-                    csvContent += `Hour,${hour}h,${hour},${data.trades},${data.profit.toFixed(4)},${winRate.toFixed(1)}\n`;
-                });
-            }
-            
-            // Par token
             if (analytics.patterns.tokens) {
                 Object.entries(analytics.patterns.tokens).forEach(([token, data]) => {
                     const winRate = data.trades > 0 ? (data.wins / data.trades) * 100 : 0;
@@ -504,7 +629,6 @@ class TradeLogger {
             
             const analyticsCSV = path.join(this.logsDir, 'analytics_patterns.csv');
             await fs.writeFile(analyticsCSV, csvContent);
-            
             console.log(`📊 Analytics exportées: ${analyticsCSV}`);
             return analyticsCSV;
             
@@ -514,292 +638,11 @@ class TradeLogger {
         }
     }
 
-    // NETTOYAGE ET MAINTENANCE
-    async cleanOldLogs(daysToKeep = 90) {
-        try {
-            const trades = await this.loadTrades();
-            const cutoffDate = new Date();
-            cutoffDate.setDate(cutoffDate.getDate() - daysToKeep);
-            
-            const filteredTrades = trades.trades.filter(trade => {
-                const tradeDate = new Date(trade.date);
-                return tradeDate >= cutoffDate;
-            });
-            
-            if (filteredTrades.length < trades.trades.length) {
-                trades.trades = filteredTrades;
-                await fs.writeFile(this.tradesFile, JSON.stringify(trades, null, 2));
-                
-                const removed = trades.trades.length - filteredTrades.length;
-                console.log(`🧹 Nettoyage: ${removed} anciens trades supprimés`);
-            }
-            
-        } catch (error) {
-            console.error('❌ Erreur nettoyage logs:', error.message);
-        }
-    }
-
-    // OPTIMISATIONS DE STRATEGIE
     async getOptimizationInsights() {
-        try {
-            const analytics = await this.loadAnalytics();
-            const trades = await this.loadTrades();
-            
-            const insights = {
-                bestTimeToTrade: this.findBestTimeToTrade(analytics.patterns),
-                mostProfitableTokens: this.findMostProfitableTokens(analytics.patterns),
-                optimalHoldTime: this.calculateOptimalHoldTime(trades.trades),
-                riskFactors: this.identifyRiskFactors(trades.trades),
-                recommendations: []
-            };
-            
-            // Générer recommandations
-            insights.recommendations = this.generateRecommendations(insights, analytics);
-            
-            console.log('\n🧠 INSIGHTS STRATÉGIQUES');
-            console.log('═'.repeat(50));
-            
-            if (insights.bestTimeToTrade) {
-                console.log(`⏰ Meilleure heure: ${insights.bestTimeToTrade.hour}h (${insights.bestTimeToTrade.winRate.toFixed(1)}% win rate)`);
-                console.log(`📅 Meilleur jour: ${insights.bestTimeToTrade.day} (${insights.bestTimeToTrade.dayWinRate.toFixed(1)}% win rate)`);
-            }
-            
-            if (insights.mostProfitableTokens.length > 0) {
-                console.log(`🏆 Top tokens: ${insights.mostProfitableTokens.slice(0, 3).map(t => `${t.symbol} (${t.winRate.toFixed(1)}%)`).join(', ')}`);
-            }
-            
-            if (insights.optimalHoldTime) {
-                console.log(`⏱️ Hold time optimal: ${insights.optimalHoldTime.range} (ROI moyen: ${insights.optimalHoldTime.avgROI.toFixed(1)}%)`);
-            }
-            
-            console.log('\n💡 RECOMMANDATIONS:');
-            insights.recommendations.forEach((rec, i) => {
-                console.log(`   ${i + 1}. ${rec}`);
-            });
-            
-            return insights;
-            
-        } catch (error) {
-            console.error('❌ Erreur génération insights:', error.message);
-            return null;
-        }
-    }
-
-    findBestTimeToTrade(patterns) {
-        if (!patterns.hourOfDay || !patterns.dayOfWeek) return null;
-        
-        // Meilleure heure
-        const bestHour = Object.entries(patterns.hourOfDay)
-            .filter(([hour, data]) => data.trades >= 3) // Minimum 3 trades pour être significatif
-            .sort((a, b) => {
-                const aWinRate = a[1].trades > 0 ? (a[1].wins / a[1].trades) : 0;
-                const bWinRate = b[1].trades > 0 ? (b[1].wins / b[1].trades) : 0;
-                return bWinRate - aWinRate;
-            })[0];
-        
-        // Meilleur jour
-        const bestDay = Object.entries(patterns.dayOfWeek)
-            .filter(([day, data]) => data.trades >= 3)
-            .sort((a, b) => {
-                const aWinRate = a[1].trades > 0 ? (a[1].wins / a[1].trades) : 0;
-                const bWinRate = b[1].trades > 0 ? (b[1].wins / b[1].trades) : 0;
-                return bWinRate - aWinRate;
-            })[0];
-        
-        return {
-            hour: bestHour ? parseInt(bestHour[0]) : null,
-            winRate: bestHour ? (bestHour[1].wins / bestHour[1].trades) * 100 : 0,
-            day: bestDay ? bestDay[0] : null,
-            dayWinRate: bestDay ? (bestDay[1].wins / bestDay[1].trades) * 100 : 0
-        };
-    }
-
-    findMostProfitableTokens(patterns) {
-        if (!patterns.tokens) return [];
-        
-        return Object.entries(patterns.tokens)
-            .filter(([token, data]) => data.trades >= 2) // Minimum 2 trades
-            .map(([token, data]) => ({
-                symbol: token,
-                trades: data.trades,
-                profit: data.profit,
-                winRate: data.trades > 0 ? (data.wins / data.trades) * 100 : 0,
-                avgProfit: data.profit / data.trades
-            }))
-            .sort((a, b) => b.winRate - a.winRate);
-    }
-
-    calculateOptimalHoldTime(trades) {
-        const completedTrades = trades.filter(t => t.type === 'COMPLETE_TRADE' && t.sell?.durationMinutes);
-        if (completedTrades.length < 5) return null;
-        
-        // Grouper par tranches de temps
-        const timeRanges = {
-            '0-30min': { trades: [], totalROI: 0 },
-            '30min-2h': { trades: [], totalROI: 0 },
-            '2h-6h': { trades: [], totalROI: 0 },
-            '6h-24h': { trades: [], totalROI: 0 },
-            '24h+': { trades: [], totalROI: 0 }
-        };
-        
-        completedTrades.forEach(trade => {
-            const minutes = trade.sell.durationMinutes;
-            const roi = trade.sell.profitPercent || 0;
-            
-            if (minutes <= 30) {
-                timeRanges['0-30min'].trades.push(trade);
-                timeRanges['0-30min'].totalROI += roi;
-            } else if (minutes <= 120) {
-                timeRanges['30min-2h'].trades.push(trade);
-                timeRanges['30min-2h'].totalROI += roi;
-            } else if (minutes <= 360) {
-                timeRanges['2h-6h'].trades.push(trade);
-                timeRanges['2h-6h'].totalROI += roi;
-            } else if (minutes <= 1440) {
-                timeRanges['6h-24h'].trades.push(trade);
-                timeRanges['6h-24h'].totalROI += roi;
-            } else {
-                timeRanges['24h+'].trades.push(trade);
-                timeRanges['24h+'].totalROI += roi;
-            }
-        });
-        
-        // Trouver la meilleure tranche
-        const bestRange = Object.entries(timeRanges)
-            .filter(([range, data]) => data.trades.length >= 2)
-            .map(([range, data]) => ({
-                range,
-                count: data.trades.length,
-                avgROI: data.totalROI / data.trades.length
-            }))
-            .sort((a, b) => b.avgROI - a.avgROI)[0];
-        
-        return bestRange;
-    }
-
-    identifyRiskFactors(trades) {
-        const completedTrades = trades.filter(t => t.type === 'COMPLETE_TRADE');
-        const losses = completedTrades.filter(t => (t.sell?.profitPercent || 0) < -10);
-        
-        const riskFactors = {
-            highLossReasons: {},
-            dangerousTokens: {},
-            badTimings: {}
-        };
-        
-        // Analyser les raisons de grosses pertes
-        losses.forEach(trade => {
-            const reason = trade.sell?.reason || 'unknown';
-            if (!riskFactors.highLossReasons[reason]) {
-                riskFactors.highLossReasons[reason] = 0;
-            }
-            riskFactors.highLossReasons[reason]++;
-            
-            // Tokens dangereux
-            const symbol = trade.symbol;
-            if (!riskFactors.dangerousTokens[symbol]) {
-                riskFactors.dangerousTokens[symbol] = 0;
-            }
-            riskFactors.dangerousTokens[symbol]++;
-        });
-        
-        return riskFactors;
-    }
-
-    generateRecommendations(insights, analytics) {
-        const recommendations = [];
-        
-        // Recommandations timing
-        if (insights.bestTimeToTrade?.winRate > 70) {
-            recommendations.push(`🕐 Concentrer les trades vers ${insights.bestTimeToTrade.hour}h (${insights.bestTimeToTrade.winRate.toFixed(1)}% success)`);
-        }
-        
-        if (insights.bestTimeToTrade?.dayWinRate > 60) {
-            recommendations.push(`📅 Privilégier les ${insights.bestTimeToTrade.day}s pour trader`);
-        }
-        
-        // Recommandations tokens
-        if (insights.mostProfitableTokens.length > 0) {
-            const topToken = insights.mostProfitableTokens[0];
-            if (topToken.winRate > 70) {
-                recommendations.push(`🎯 Augmenter allocation sur ${topToken.symbol} (${topToken.winRate.toFixed(1)}% win rate)`);
-            }
-        }
-        
-        // Recommandations hold time
-        if (insights.optimalHoldTime?.avgROI > 15) {
-            recommendations.push(`⏱️ Optimiser les sorties dans la tranche ${insights.optimalHoldTime.range}`);
-        }
-        
-        // Recommandations risk management
-        const totalTrades = analytics.summary.totalTrades;
-        const winRate = analytics.summary.winRate;
-        
-        if (winRate < 50 && totalTrades > 10) {
-            recommendations.push(`⚠️ Revoir critères d'entrée (win rate: ${winRate.toFixed(1)}%)`);
-        }
-        
-        if (totalTrades > 20 && analytics.summary.totalProfit < 0) {
-            recommendations.push(`🛡️ Réduire taille positions ou resserrer stop-loss`);
-        }
-        
-        return recommendations;
-    }
-
-    // MÉTHODES D'ACCÈS RAPIDE
-    async getTradesBySymbol(symbol) {
-        const trades = await this.loadTrades();
-        return trades.trades.filter(t => t.symbol === symbol);
-    }
-
-    async getTradesByDate(dateStr) {
-        const trades = await this.loadTrades();
-        return trades.trades.filter(t => t.date && t.date.startsWith(dateStr));
-    }
-
-    async getRecentTrades(hours = 24) {
-        const trades = await this.loadTrades();
-        const cutoff = Date.now() - (hours * 60 * 60 * 1000);
-        return trades.trades.filter(t => t.timestamp >= cutoff);
-    }
-
-    // DEBUGGING ET MAINTENANCE
-    async validateLogFiles() {
-        try {
-            console.log('🔍 Validation des fichiers de logs...');
-            
-            // Vérifier le fichier principal
-            const trades = await this.loadTrades();
-            console.log(`📄 ${trades.trades.length} trades dans ${this.tradesFile}`);
-            
-            // Vérifier l'intégrité des données
-            let errors = 0;
-            trades.trades.forEach((trade, index) => {
-                if (!trade.tradeId || !trade.timestamp || !trade.symbol) {
-                    console.log(`❌ Trade ${index}: Données manquantes`);
-                    errors++;
-                }
-            });
-            
-            // Vérifier les fichiers CSV
-            try {
-                await fs.access(this.csvFile);
-                console.log(`✅ Fichier CSV accessible: ${this.csvFile}`);
-            } catch {
-                console.log(`⚠️ Fichier CSV introuvable: ${this.csvFile}`);
-            }
-            
-            // Vérifier analytics
-            const analytics = await this.loadAnalytics();
-            console.log(`📊 Analytics: ${analytics.summary.totalTrades} trades traités`);
-            
-            console.log(`\n🎯 Validation terminée: ${errors} erreurs trouvées`);
-            return errors === 0;
-            
-        } catch (error) {
-            console.error('❌ Erreur validation:', error.message);
-            return false;
-        }
+        console.log('\n🧠 INSIGHTS STRATÉGIQUES');
+        console.log('═'.repeat(50));
+        console.log('💡 Pas encore assez de données pour des insights détaillés');
+        return { recommendations: ['Collecter plus de données de trading'] };
     }
 }
 
