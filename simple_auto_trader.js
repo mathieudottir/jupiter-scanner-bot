@@ -628,23 +628,71 @@ updateStatsOnSell(solReceived, solSpent, profitPercent, buyTime, symbol, result)
     const profit = solReceived - solSpent;
     const holdTime = Date.now() - buyTime;
     
-    // Mettre à jour toutes les périodes
-    [this.stats.session, this.stats.daily, this.stats.hourly, this.stats.allTime].forEach(period => {
-        if (result === 'profit') {
-            period.wins++;
-        } else if (result === 'loss') {
-            period.losses++;
-        }
-        
-        if (period.profitSOL !== undefined) {
-            period.profitSOL += profit;
-        }
-    });
+    // ✅ FIX: Vérifier les périodes AVANT de mettre à jour
+    const currentDate = new Date().toDateString();
+    const currentHour = new Date().getHours();
     
-    // All time spécifique
+    // Daily - Reset si nouveau jour AVANT mise à jour
+    if (this.stats.daily.date !== currentDate) {
+        this.stats.daily = {
+            date: currentDate,
+            trades: 0,
+            wins: 0,
+            losses: 0,
+            profitSOL: 0,
+            investedSOL: 0
+        };
+    }
+    
+    // Hourly - Reset si nouvelle heure AVANT mise à jour  
+    if (this.stats.hourly.hour !== currentHour) {
+        this.stats.hourly = {
+            hour: currentHour,
+            trades: 0,
+            wins: 0,
+            losses: 0,
+            profitSOL: 0
+        };
+    }
+    
+    // MAINTENANT mettre à jour (après les resets)
+    // Session
+    if (result === 'profit') {
+        this.stats.session.wins++;
+    } else if (result === 'loss') {
+        this.stats.session.losses++;
+    }
+    this.stats.session.profitSOL += profit;
+    
+    // Daily 
+    if (result === 'profit') {
+        this.stats.daily.wins++;
+    } else if (result === 'loss') {
+        this.stats.daily.losses++;
+    }
+    this.stats.daily.profitSOL += profit;
+    
+    // Hourly
+    if (result === 'profit') {
+        this.stats.hourly.wins++;
+    } else if (result === 'loss') {
+        this.stats.hourly.losses++;
+    }
+    this.stats.hourly.profitSOL += profit;
+    
+    // All time
+    if (result === 'profit') {
+        this.stats.allTime.wins++;
+    } else if (result === 'loss') {
+        this.stats.allTime.losses++;
+    }
     this.stats.allTime.totalProfitSOL += profit;
     this.stats.allTime.totalHoldTime += holdTime;
-    this.stats.allTime.avgHoldTime = this.stats.allTime.totalHoldTime / this.stats.allTime.totalTrades;
+    
+    // ✅ FIX: Protection division par zéro
+    if (this.stats.allTime.totalTrades > 0) {
+        this.stats.allTime.avgHoldTime = this.stats.allTime.totalHoldTime / this.stats.allTime.totalTrades;
+    }
     
     // Best/Worst trades
     if (profitPercent > this.stats.allTime.bestTrade.profit) {
@@ -654,7 +702,7 @@ updateStatsOnSell(solReceived, solSpent, profitPercent, buyTime, symbol, result)
         this.stats.allTime.worstTrade = { symbol, profit: profitPercent };
     }
     
-    console.log(`📈 Trade fermé: ${symbol} ${profit > 0 ? '+' : ''}${profit.toFixed(4)} SOL`);
+    console.log(`📈 Trade fermé: ${symbol} ${profit > 0 ? '+' : ''}${profit.toFixed(4)} SOL (${result})`);
 }
 
 
