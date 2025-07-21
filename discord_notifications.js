@@ -17,6 +17,17 @@ class DiscordNotifications {
     async initialize() {
     try {
         console.log('🤖 Connexion à Discord...');
+            console.log(`🔍 Discord API status check...`); // ✅ AJOUTEZ ÇA
+    
+    // Test rapide de l'API Discord
+    try {
+        const testResponse = await fetch('https://discord.com/api/v10/gateway');
+        console.log(`📡 Discord API: ${testResponse.status}`);
+    } catch (e) {
+        console.log(`📡 Discord API error: ${e.message}`);
+    }
+    
+    await this.client.login(this.discordToken);
         await this.client.login(this.discordToken);
         
         this.client.once('ready', () => {
