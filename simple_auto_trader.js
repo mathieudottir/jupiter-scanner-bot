@@ -625,9 +625,15 @@ updateStatsOnBuy(solSpent, symbol) {
     console.log(`📊 Stats mise à jour: ${this.stats.session.trades} trades session`);
 }
 
-updateStatsOnSell(solReceived, solSpent, profitPercent, buyTime, symbol, result) {
+    updateStatsOnSell(solReceived, solSpent, profitPercent, buyTime, symbol, result) {
     const profit = solReceived - solSpent;
     const holdTime = Date.now() - buyTime;
+    
+    // ✅ FIX: Breakeven compté comme perte
+    let finalResult = result;
+    if (result === 'breakeven' || profit <= 0) {
+        finalResult = 'loss';
+    }
     
     // ✅ FIX: Vérifier les périodes AVANT de mettre à jour
     const currentDate = new Date().toDateString();
@@ -658,33 +664,33 @@ updateStatsOnSell(solReceived, solSpent, profitPercent, buyTime, symbol, result)
     
     // MAINTENANT mettre à jour (après les resets)
     // Session
-    if (result === 'profit') {
+    if (finalResult === 'profit') {
         this.stats.session.wins++;
-    } else if (result === 'loss') {
+    } else {
         this.stats.session.losses++;
     }
     this.stats.session.profitSOL += profit;
     
     // Daily 
-    if (result === 'profit') {
+    if (finalResult === 'profit') {
         this.stats.daily.wins++;
-    } else if (result === 'loss') {
+    } else {
         this.stats.daily.losses++;
     }
     this.stats.daily.profitSOL += profit;
     
     // Hourly
-    if (result === 'profit') {
+    if (finalResult === 'profit') {
         this.stats.hourly.wins++;
-    } else if (result === 'loss') {
+    } else {
         this.stats.hourly.losses++;
     }
     this.stats.hourly.profitSOL += profit;
     
     // All time
-    if (result === 'profit') {
+    if (finalResult === 'profit') {
         this.stats.allTime.wins++;
-    } else if (result === 'loss') {
+    } else {
         this.stats.allTime.losses++;
     }
     this.stats.allTime.totalProfitSOL += profit;
@@ -703,7 +709,7 @@ updateStatsOnSell(solReceived, solSpent, profitPercent, buyTime, symbol, result)
         this.stats.allTime.worstTrade = { symbol, profit: profitPercent };
     }
     
-    console.log(`📈 Trade fermé: ${symbol} ${profit > 0 ? '+' : ''}${profit.toFixed(4)} SOL (${result})`);
+    console.log(`📈 Trade fermé: ${symbol} ${profit > 0 ? '+' : ''}${profit.toFixed(4)} SOL (${finalResult})`);
 }
 
 
@@ -723,7 +729,8 @@ updateStatsOnSell(solReceived, solSpent, profitPercent, buyTime, symbol, result)
         }
     }
 
-// Version console en backup
+// Version console en backup a supprimer
+//-------------------------------------
 showPerformanceRecapConsole() {
     const now = new Date();
     const sessionHours = ((Date.now() - this.stats.session.startTime) / (1000 * 60 * 60)).toFixed(1);
@@ -1024,14 +1031,12 @@ console.log(`   💎 ${position.symbol}: ${changePercent > 0 ? '+' : ''}${change
                 const totalProfitPercent = ((totalSolReceived / position.solSpent) - 1) * 100;
                 
                 // Déterminer le résultat pour le système de cooldown
-                                    let tradeResult;
-                    if (totalProfitPercent > 0) {
-                        tradeResult = 'profit';
-                    } else if (totalProfitPercent < 0) {
-                        tradeResult = 'loss';
-                    } else {
-                        tradeResult = 'breakeven';
-                    }
+                                let tradeResult;
+                if (totalProfitPercent > 0) {
+                    tradeResult = 'profit';
+                } else {
+                    tradeResult = 'loss'; // Breakeven compté comme perte
+                }
                 
                 // METTRE À JOUR LES STATISTIQUES
                 this.updateStatsOnSell(totalSolReceived, position.solSpent, totalProfitPercent, position.buyTime, position.symbol, tradeResult);

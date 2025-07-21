@@ -127,6 +127,30 @@
       "rank": 12,
       "selection_reason": "AI et data scraping - Innovation"
       },
+       "OSAK": {
+      "address": "NKaTB5vC3srLog8W7jzdjnejig2iH8eDpkDM31Dosak",
+      "name": "Osaka Protoco",
+      "category": "dex",
+      "verified": true,
+      "rank": 12,
+      "selection_reason": "AI et data scraping - Innovation"
+      },
+      "AURA": {
+      "address": "DtR4D9FtVoTX2569gaL837ZgrB6wNjj6tkmnX9Rdk9B2",
+      "name": "AURA",
+      "category": "dex",
+      "verified": true,
+      "rank": 12,
+      "selection_reason": "AI et data scraping - Innovation"
+      },
+       "WILD": {
+      "address": "FVvd3s9dZYzsgitkJyWbmycSc8MkYZjyF7oqAEvmSxTZ",
+      "name": "Wilder world",
+      "category": "dex",
+      "verified": true,
+      "rank": 12,
+      "selection_reason": "AI et data scraping - Innovation"
+      },
        "MEW": {
       "address": "MEW1gQWJ3nEXg2qgERiKu7FAFj79PHvQVREQUzScPP5",
       "name": "CAt in a dog world",
