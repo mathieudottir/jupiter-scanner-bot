@@ -722,10 +722,19 @@ class SimpleAutoTrader {
                     highestPrice: price,
                     highestPercent: 0,
                     isWhitelisted: true,
+                entryMomentum30m: tokenData.priceChange?.m30 || 0,
+                entryMomentum1h: tokenData.priceChange?.h1 || 0,
+                entryMomentum24h: tokenData.priceChange?.h24 || 0,
+                entryScore: tokenData.momentumScore || 0,
+                entryVolume: tokenData.volume?.h24 || 0,
+                entryLiquidity: tokenData.liquidity?.usd || 0,
                     confidenceLevel: 'HIGH',
                     category: this.getCategoryFromSymbol(symbol) // Pour les stats
                 };
                 
+
+
+
                 this.positions.set(tokenAddress, position);
                 
                 // METTRE À JOUR LES STATISTIQUES
@@ -1170,86 +1179,107 @@ console.log(`   💎 ${position.symbol}: ${changePercent > 0 ? '+' : ''}${change
     }
 
     // VENTE TOTALE
-    async sellEntirePosition(position, currentPrice, reason) {
-        try {
-            const tokenMint = position.tokenAddress;
-            const solMint = 'So11111111111111111111111111111111111111112';
-            
-            await this.jupiterAPI.waitForRateLimit();
-            const tokenAccounts = await this.connection.getParsedTokenAccountsByOwner(
-                this.wallet.publicKey,
-                { mint: new PublicKey(tokenMint) }
-            );
-            
-            if (tokenAccounts.value.length === 0) {
-                this.markTokenAsProcessed(position.tokenAddress, 'loss');
-                this.positions.delete(position.tokenAddress);
-                return false;
-            }
-            
-            const realBalance = parseFloat(tokenAccounts.value[0].account.data.parsed.info.tokenAmount.amount);
-            const amountToSell = Math.floor(realBalance * 0.99);
-            
-            if (amountToSell <= 0) {
-                const tradeResult = position.totalSolReceived > 0 ? 'profit' : 'breakeven';
-                this.markTokenAsProcessed(position.tokenAddress, tradeResult);
-                this.positions.delete(position.tokenAddress);
-                return false;
-            }
-            
-            const sellQuote = await this.jupiterAPI.getJupiterQuote(tokenMint, solMint, amountToSell);
-            if (!sellQuote) return false;
-            
-            const txid = await this.jupiterAPI.executeSwap(sellQuote);
-            
-            if (txid) {
-                const solReceived = parseFloat(sellQuote.outAmount) / 1e9;
-                const totalSolReceived = position.totalSolReceived + solReceived;
-                const totalProfit = totalSolReceived - position.solSpent;
-                const totalProfitPercent = ((totalSolReceived / position.solSpent) - 1) * 100;
-                
-                // Déterminer le résultat pour le système de cooldown
-                                let tradeResult;
-                if (totalProfitPercent > 0) {
-                    tradeResult = 'profit';
-                } else {
-                    tradeResult = 'loss'; // Breakeven compté comme perte
-                }
-                
-                // METTRE À JOUR LES STATISTIQUES
-                this.updateStatsOnSell(totalSolReceived, position.solSpent, totalProfitPercent, position.buyTime, position.symbol, tradeResult);
-                
-                this.markTokenAsProcessed(position.tokenAddress, tradeResult);
-                
-                // Stocker infos pour l'historique
-                if (this.tradedTokens.has(position.tokenAddress)) {
-                    const history = this.tradedTokens.get(position.tokenAddress);
-                    history.finalProfit = totalProfitPercent;
-                    history.holdTimeMinutes = parseInt(((Date.now() - position.buyTime) / (1000 * 60)));
-                    history.partialSells = position.partialSells;
-                    history.exitReason = reason;
-                    history.totalSolReceived = totalSolReceived;
-                }
-                
-                await this.discordNotifications.notifyFinalSell(position, totalSolReceived, totalProfit, totalProfitPercent, reason, txid);
-                
-                this.positions.delete(position.tokenAddress);
-                
-                // Invalider le cache SOL
-                const cacheKey = `${solMint}_${this.wallet.publicKey.toString()}`;
-                this.jupiterAPI.invalidateBalanceCache('So11111111111111111111111111111111111111112');
-                
-                return true;
-            }
-            
-            return false;
-            
-        } catch (error) {
-            console.error(`❌ Erreur vente totale: ${error.message}`);
+    // Dans sellEntirePosition() - CORRIGEZ comme ça :
+async sellEntirePosition(position, currentPrice, reason) {
+    try {
+        const tokenMint = position.tokenAddress;
+        const solMint = 'So11111111111111111111111111111111111111112';
+        
+        await this.jupiterAPI.waitForRateLimit();
+        const tokenAccounts = await this.connection.getParsedTokenAccountsByOwner(
+            this.wallet.publicKey,
+            { mint: new PublicKey(tokenMint) }
+        );
+        
+        if (tokenAccounts.value.length === 0) {
             this.markTokenAsProcessed(position.tokenAddress, 'loss');
+            this.positions.delete(position.tokenAddress);
             return false;
         }
+        
+        const realBalance = parseFloat(tokenAccounts.value[0].account.data.parsed.info.tokenAmount.amount);
+        const amountToSell = Math.floor(realBalance * 0.99);
+        
+        if (amountToSell <= 0) {
+            const tradeResult = position.totalSolReceived > 0 ? 'profit' : 'breakeven';
+            this.markTokenAsProcessed(position.tokenAddress, tradeResult);
+            this.positions.delete(position.tokenAddress);
+            return false;
+        }
+        
+        const sellQuote = await this.jupiterAPI.getJupiterQuote(tokenMint, solMint, amountToSell);
+        if (!sellQuote) return false;
+        
+        const txid = await this.jupiterAPI.executeSwap(sellQuote);
+        
+        if (txid) {
+            // ✅ CALCULER LES VARIABLES D'ABORD
+            const solReceived = parseFloat(sellQuote.outAmount) / 1e9;
+            const totalSolReceived = position.totalSolReceived + solReceived;
+            const totalProfit = totalSolReceived - position.solSpent;
+            const totalProfitPercent = ((totalSolReceived / position.solSpent) - 1) * 100;
+            
+            // Déterminer le résultat pour le système de cooldown
+            let tradeResult;
+            if (totalProfitPercent > 0) {
+                tradeResult = 'profit';
+            } else {
+                tradeResult = 'loss'; // Breakeven compté comme perte
+            }
+            
+            // METTRE À JOUR LES STATISTIQUES
+            this.updateStatsOnSell(totalSolReceived, position.solSpent, totalProfitPercent, position.buyTime, position.symbol, tradeResult);
+            
+            this.markTokenAsProcessed(position.tokenAddress, tradeResult);
+            
+            // Stocker infos pour l'historique
+            if (this.tradedTokens.has(position.tokenAddress)) {
+                const history = this.tradedTokens.get(position.tokenAddress);
+                history.finalProfit = totalProfitPercent;
+                history.holdTimeMinutes = parseInt(((Date.now() - position.buyTime) / (1000 * 60)));
+                history.partialSells = position.partialSells;
+                history.exitReason = reason;
+                history.totalSolReceived = totalSolReceived;
+            }
+            
+            // ✅ MAINTENANT préparer les données d'entrée
+            const entryMomentumData = {
+                momentum30m: position.entryMomentum30m || 0,
+                momentum1h: position.entryMomentum1h || 0, 
+                momentum24h: position.entryMomentum24h || 0,
+                momentumScore: position.entryScore || 0,
+                volume24h: position.entryVolume || 0,
+                liquidity: position.entryLiquidity || 0
+            };
+
+            // ✅ Log détaillé APRÈS avoir toutes les variables
+            await this.discordNotifications.logTradeDetails(
+                position, 
+                totalSolReceived, 
+                totalProfit, 
+                totalProfitPercent, 
+                reason,
+                entryMomentumData
+            );
+            
+            await this.discordNotifications.notifyFinalSell(position, totalSolReceived, totalProfit, totalProfitPercent, reason, txid);
+            
+            this.positions.delete(position.tokenAddress);
+            
+            // Invalider le cache SOL
+            this.jupiterAPI.invalidateBalanceCache('So11111111111111111111111111111111111111112');
+            
+            return true;
+        }
+        
+        return false;
+        
+    } catch (error) {
+        console.error(`❌ Erreur vente totale: ${error.message}`);
+        this.markTokenAsProcessed(position.tokenAddress, 'loss');
+        return false;
     }
+}
 
     // TRAITEMENT DES NOUVEAUX TOKENS
     async processNewTokens(tokens) {

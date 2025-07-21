@@ -28,7 +28,7 @@ class DiscordNotifications {
     }
     
     await this.client.login(this.discordToken);
-        await this.client.login(this.discordToken);
+
         
         this.client.once('ready', () => {
             console.log(`✅ Bot connecté: ${this.client.user.tag}`);
@@ -52,6 +52,7 @@ class DiscordNotifications {
         return false;
     }
 }
+    
         async handleSellAllButton(interaction) {
     try {
         // Déférer la réponse (on a 3 secondes pour répondre)
@@ -251,7 +252,7 @@ class DiscordNotifications {
         this.showPerformanceRecapConsole(stats, positions);
     }
 }
-
+    
     // Version console en backup
   showPerformanceRecapConsole(stats, positions) {
     const now = new Date();
@@ -379,7 +380,66 @@ class DiscordNotifications {
             console.error('❌ Erreur notification vente partielle:', error.message);
         }
     }
-
+    // Dans discord_notifications.js
+async logTradeDetails(position, totalSolReceived, totalProfit, totalProfitPercent, reason, entryMomentumData) {
+    if (!this.isConnected) return;
+    
+    try {
+        // Canal spécial pour les logs détaillés
+        const detailChannelId = process.env.DISCORD_CHANNEL_DETAIL_ID;
+        if (!detailChannelId) return;
+        
+        const detailChannel = await this.client.channels.fetch(detailChannelId);
+        if (!detailChannel) return;
+        
+        const now = new Date();
+        const openTime = new Date(position.buyTime);
+        const holdMinutes = Math.round((now - openTime) / (1000 * 60));
+        
+        // ROI annualisé
+        const holdDays = holdMinutes / (24 * 60);
+        const roiAnnualized = holdDays > 0 ? (totalProfitPercent / holdDays) * 365 : 0;
+        
+        // Log line format: CSV-like pour analyse facile
+        const logLine = [
+            now.toISOString(),                    // timestamp_close
+            openTime.toISOString(),               // timestamp_open  
+            now.toLocaleDateString('en', {weekday: 'long'}), // day_of_week
+            openTime.getHours(),                  // hour_open
+            now.getHours(),                       // hour_close
+            holdMinutes,                          // hold_duration_minutes
+            position.symbol,                      // symbol
+            position.buyPrice.toFixed(6),         // buy_price
+            (totalSolReceived / position.currentAmount * position.buyAmount).toFixed(6), // sell_price approx
+            position.highestPrice.toFixed(6),     // highest_price
+            position.solSpent.toFixed(4),         // sol_invested
+            totalSolReceived.toFixed(4),          // sol_received
+            totalProfit.toFixed(4),               // profit_sol
+            totalProfitPercent.toFixed(2),        // profit_percent
+            roiAnnualized.toFixed(1),             // roi_annualized
+            entryMomentumData?.momentum30m?.toFixed(1) || '0', // momentum_30m_entry
+            entryMomentumData?.momentum1h?.toFixed(1) || '0',  // momentum_1h_entry
+            entryMomentumData?.momentum24h?.toFixed(1) || '0', // momentum_24h_entry
+            entryMomentumData?.momentumScore?.toFixed(1) || '0', // momentum_score_entry
+            entryMomentumData?.volume24h || '0',              // volume_24h_entry
+            entryMomentumData?.liquidity || '0',              // liquidity_entry
+            reason,                               // exit_reason
+            position.partialSells || 0,           // partial_sells_count
+            position.sellsExecuted?.join(',') || '', // sell_levels_triggered
+            ((position.highestPrice - position.buyPrice) / position.buyPrice * 100 - totalProfitPercent).toFixed(1), // max_drawdown
+            position.category || 'unknown',       // category
+            position.confidenceLevel || 'MEDIUM', // entry_confidence
+            'unknown',                            // market_conditions (à améliorer)
+            'unknown',                            // concurrent_positions (à passer)
+            position.isWhitelisted || false       // whitelist_verified
+        ].join(' | ');
+        
+        await detailChannel.send(`\`${logLine}\``);
+        
+    } catch (error) {
+        console.error('❌ Erreur log trade details:', error.message);
+    }
+}
     // NOTIFICATION VENTE FINALE
     async notifyFinalSell(position, totalSolReceived, totalProfit, totalProfitPercent, reason, txid) {
         if (!this.isConnected) return;
