@@ -43,7 +43,7 @@ class SimpleAutoTrader {
 
         // Configuration wallet et trading
         this.wallet = Keypair.fromSecretKey(bs58.decode(process.env.PRIVATE_KEY));
-        this.buyAmount = 0.01; // 0.01 SOL par achat
+        this.buyAmount = 0.02; // 0.01 SOL par achat
         this.maxSlippage = parseFloat(process.env.MAX_SLIPPAGE || '10');
         this.maxConcurrentPositions = 10;
 
@@ -62,22 +62,30 @@ class SimpleAutoTrader {
         
         // Configuration whitelist PLUS FLEXIBLE pour trouver des trades
         // Configuration whitelist OPTIMISÉE
-                this.whitelistMode = {
-            enabled: true,
-            allowOnlyWhitelisted: true,
-            minMomentum1h: 0,        // 0% sur 1h (accepter stabilité)
-            minMomentum24h: 2,       // +2% sur 24h (légèrement positif)
-            minVolume: 100000,       // $100k volume (plus réaliste)
-            debugMode: true
-        };
+this.whitelistMode = {
+    enabled: true,
+    allowOnlyWhitelisted: true,
+    minMomentum30m: 1,       // ✅ NOUVEAU: +1% sur 30min (réactivité)
+    minMomentum1h: 0,        // 0% sur 1h (accepter stabilité)
+    minMomentum24h: 2,       // +2% sur 24h (légèrement positif)
+    minVolume: 100000,       // $100k volume
+    debugMode: true,
+    // ✅ NOUVEAU: Pondération scoring
+    scoringWeights: {
+        momentum30m: 4,      // Priorité max (signal frais)
+        momentum1h: 3,       // Important
+        momentum24h: 2,      // Contexte
+        volume: 1           // Base
+    }
+};
 
         // Système de cooldown PLUS SMART
         this.retradeCooldown = {
-    normal: 24 * 60 * 60 * 1000,        // 24h normal
-    afterLoss: 36 * 60 * 60 * 1000,     // 36h si perte (au lieu de 48h)
-    afterProfit: 8 * 60 * 60 * 1000,    // 8h si profit (au lieu de 12h)
-    opportunityThreshold: 40,             // +40% momentum pour override (au lieu de 50%)
-    minCooldownOverride: 6 * 60 * 60 * 1000  // Min 6h avant override
+    normal: 8 * 60 * 60 * 1000,         // 8h ← DIVISE PAR 2
+    afterLoss: 6 * 60 * 60 * 1000,      // 6h ← DIVISE PAR 2  
+    afterProfit: 3 * 60 * 60 * 1000,    // 3h ← LÉGÈREMENT RÉDUIT
+    opportunityThreshold: 15,            // 15% ← PLUS ACCESSIBLE
+    minCooldownOverride: 2 * 60 * 60 * 1000  // 2h ← PLUS RÉACTIF
 };
         // STATISTIQUES DE PERFORMANCE
         this.stats = {
@@ -120,9 +128,9 @@ class SimpleAutoTrader {
         // Configuration ventes échelonnées
         // VENTES PLUS AGRESSIVES
         this.sellLevels = [
-            { profit: 12, percentage: 35, reason: "Sécurisation rapide (+12%)" },
-            { profit: 30, percentage: 45, reason: "Profit solide (+30%)" },
-            { profit: 60, percentage: 65, reason: "Gros profit (+60%)" },
+            { profit: 10, percentage: 35, reason: "Sécurisation rapide (+12%)" },
+            { profit: 20, percentage: 45, reason: "Profit solide (+20%)" },
+            { profit: 50, percentage: 65, reason: "Gros profit (+50%)" },
             { profit: 120, percentage: 85, reason: "Moonshot (+120%)" }
         ];
 
@@ -309,164 +317,165 @@ class SimpleAutoTrader {
     }
 
     // SCANNER WHITELIST VIA DEXSCREENER AVEC LOGS DÉTAILLÉS
-    async scanNewTokens() {
-        console.log('🔍 Scan whitelist via DexScreener...');
-        
-        if (!this.whitelistMode.enabled || !this.whitelistMode.allowOnlyWhitelisted) {
-            console.log('⚠️ Mode whitelist désactivé');
-            return [];
-        }
-        
-        try {
-            const momentumTokens = [];
-            const whitelistEntries = Object.entries(this.whitelistedTokens);
-            
-            console.log(`📊 Vérification momentum pour ${whitelistEntries.length} tokens...`);
-            console.log(`🎯 Critères: 1h(≥${this.whitelistMode.minMomentum1h}%) 24h(≥${this.whitelistMode.minMomentum24h}%) vol(≥${this.whitelistMode.minVolume.toLocaleString()})`);
-            console.log('─'.repeat(80));
-            
-            for (const [symbol, address] of whitelistEntries) {
-                try {
-                    console.log(`🔎 ${symbol.padEnd(8)} | Vérification...`);
-                    
-                    const response = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${address}`);
-                    
-                    if (!response.ok) {
-                        console.log(`   ❌ DexScreener error ${response.status}`);
-                        continue;
-                    }
-                    
-                    const data = await response.json();
-                    const pair = data.pairs?.find(p => p.chainId === 'solana');
-                    
-                    if (!pair) {
-                        console.log(`   ❌ Pas de paire Solana trouvée`);
-                        continue;
-                    }
-                    
-                    const change1h = parseFloat(pair.priceChange?.h1 || 0);
-                    const change24h = parseFloat(pair.priceChange?.h24 || 0);
-                    const volume24h = parseFloat(pair.volume?.h24 || 0);
-                    const liquidity = parseFloat(pair.liquidity?.usd || 0);
-                    const price = parseFloat(pair.priceUsd || 0);
-                    
-                    // LOG DÉTAILLÉ pour chaque token
-                    const change1hStr = change1h >= 0 ? `+${change1h.toFixed(1)}%` : `${change1h.toFixed(1)}%`;
-                    const change24hStr = change24h >= 0 ? `+${change24h.toFixed(1)}%` : `${change24h.toFixed(1)}%`;
-                    
-                    console.log(`   📊 1h: ${change1hStr.padStart(8)} | 24h: ${change24hStr.padStart(8)} | Vol: ${volume24h.toLocaleString().padStart(10)} | Liq: ${liquidity.toLocaleString().padStart(10)}`);
-                    
-                    // Vérifier critères un par un avec détails
-                    const checks = {
-                        momentum1h: change1h >= this.whitelistMode.minMomentum1h,
-                        momentum24h: change24h >= this.whitelistMode.minMomentum24h,
-                        volume: volume24h >= this.whitelistMode.minVolume,
-                        price: price > 0,
-                        liquidity: liquidity > 10000 // Au moins $10k de liquidité
-                    };
-                    
-                    const passedChecks = Object.values(checks).filter(Boolean).length;
-                    const totalChecks = Object.keys(checks).length;
-                    
-                    console.log(`   🔍 Checks: ${passedChecks}/${totalChecks} `, Object.entries(checks).map(([key, passed]) => 
-                        `${key}:${passed ? '✅' : '❌'}`
-                    ).join(' '));
-                    
-                    // Si tous les critères sont remplis
-                    if (Object.values(checks).every(Boolean)) {
-                        console.log(`   🎯 ✅ ${symbol} QUALIFIÉ pour trading !`);
-                        
-                        const tokenData = {
-                            baseToken: {
-                                address: address,
-                                symbol: symbol,
-                                name: pair.baseToken?.name || symbol
-                            },
-                            priceUsd: price.toString(),
-                            volume: { h24: volume24h },
-                            liquidity: { usd: liquidity },
-                            priceChange: { h1: change1h, h24: change24h },
-                            scanReason: `🛡️ Whitelist ${symbol}`,
-                            isWhitelisted: true,
-                            momentumScore: (change1h * 3) + (change24h * 2),
-                            dexData: pair,
-                            // Infos détaillées pour debug
-                            scanDetails: {
-                                change1h: change1h,
-                                change24h: change24h,
-                                volume24h: volume24h,
-                                liquidity: liquidity,
-                                price: price,
-                                checksResult: checks
-                            }
-                        };
-                        
-                        momentumTokens.push(tokenData);
-                        
-                    } else {
-                        // Expliquer pourquoi le token est rejeté
-                        const failedReasons = [];
-                        if (!checks.momentum1h) failedReasons.push(`1h(${change1hStr}<${this.whitelistMode.minMomentum1h}%)`);
-                        if (!checks.momentum24h) failedReasons.push(`24h(${change24hStr}<${this.whitelistMode.minMomentum24h}%)`);
-                        if (!checks.volume) failedReasons.push(`vol(${volume24h.toLocaleString()}<${this.whitelistMode.minVolume.toLocaleString()})`);
-                        if (!checks.price) failedReasons.push(`prix(${price})`);
-                        if (!checks.liquidity) failedReasons.push(`liq(${liquidity.toLocaleString()}<$10k)`);
-                        
-                        console.log(`   ⚠️ ❌ ${symbol} REJETÉ: ${failedReasons.join(', ')}`);
-                    }
-                    
-                } catch (tokenError) {
-                    console.log(`   ❌ ${symbol}: Erreur ${tokenError.message}`);
-                }
-                
-                // Rate limiting DexScreener
-                await new Promise(resolve => setTimeout(resolve, 800)); // 800ms entre tokens
-            }
-            
-            console.log('─'.repeat(80));
-            
-            // Trier par momentum 1h (le plus récent = priorité)
-            const sortedTokens = momentumTokens.sort((a, b) => {
-                return (b.priceChange.h1 || 0) - (a.priceChange.h1 || 0);
-            });
-            
-            console.log(`🎯 RÉSULTAT FINAL: ${sortedTokens.length} tokens qualifiés pour trading:`);
-            
-            if (sortedTokens.length > 0) {
-                sortedTokens.forEach((token, i) => {
-                    const change1h = token.priceChange.h1;
-                    const change24h = token.priceChange.h24;
-                    const score = token.momentumScore;
-                    const vol = token.volume.h24;
-                    
-                    const change1hStr = change1h >= 0 ? `+${change1h.toFixed(1)}%` : `${change1h.toFixed(1)}%`;
-                    const change24hStr = change24h >= 0 ? `+${change24h.toFixed(1)}%` : `${change24h.toFixed(1)}%`;
-                    
-                    console.log(`   ${(i+1).toString().padStart(2)}. ${token.baseToken.symbol.padEnd(8)} | 1h: ${change1hStr.padStart(8)} | 24h: ${change24hStr.padStart(8)} | Vol: ${vol.toLocaleString().padStart(10)} | Score: ${score.toFixed(1).padStart(6)}`);
-                });
-            } else {
-                console.log(`   📋 Aucun token ne répond aux critères actuels.`);
-                console.log(`   💡 Suggestions:`);
-                console.log(`      - Réduire minMomentum1h (actuellement ${this.whitelistMode.minMomentum1h}%)`);
-                console.log(`      - Réduire minMomentum24h (actuellement ${this.whitelistMode.minMomentum24h}%)`);
-                console.log(`      - Réduire minVolume (actuellement ${this.whitelistMode.minVolume.toLocaleString()})`);
-                console.log(`      - Ajouter plus de tokens à la whitelist`);
-            }
-            
-            console.log('═'.repeat(80));
-            return sortedTokens;
-            
-        } catch (error) {
-            console.error('❌ Erreur scan DexScreener:', error.message);
-            return [];
-        }
-    }
+    
 
     // INITIALISATION DISCORD
     async initializeDiscord() {
     return await this.discordNotifications.initialize();
 }
-
+    async scanNewTokens() {
+    console.log('🔍 Scan whitelist avec momentum 30min...');
+    
+    try {
+        const momentumTokens = [];
+        const whitelistEntries = Object.entries(this.whitelistedTokens);
+        
+        console.log(`📊 Vérification momentum 30m/1h/24h pour ${whitelistEntries.length} tokens...`);
+        console.log(`🎯 Critères: 30m(≥${this.whitelistMode.minMomentum30m}%) 1h(≥${this.whitelistMode.minMomentum1h}%) 24h(≥${this.whitelistMode.minMomentum24h}%)`);
+        
+        for (const [symbol, address] of whitelistEntries) {
+            try {
+                console.log(`🔎 ${symbol.padEnd(8)} | Vérification...`);
+                
+                const response = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${address}`);
+                
+                if (!response.ok) {
+                    console.log(`   ❌ DexScreener error ${response.status}`);
+                    continue;
+                }
+                
+                const data = await response.json();
+                const pair = data.pairs?.find(p => p.chainId === 'solana');
+                
+                if (!pair) {
+                    console.log(`   ❌ Pas de paire Solana trouvée`);
+                    continue;
+                }
+                
+                // ✅ NOUVEAU: Récupération momentum 30min
+                const change30m = parseFloat(pair.priceChange?.m30 || 0);  // 30 minutes
+                const change1h = parseFloat(pair.priceChange?.h1 || 0);
+                const change24h = parseFloat(pair.priceChange?.h24 || 0);
+                const volume24h = parseFloat(pair.volume?.h24 || 0);
+                const liquidity = parseFloat(pair.liquidity?.usd || 0);
+                const price = parseFloat(pair.priceUsd || 0);
+                
+                // ✅ LOG DÉTAILLÉ avec 30min
+                const change30mStr = change30m >= 0 ? `+${change30m.toFixed(1)}%` : `${change30m.toFixed(1)}%`;
+                const change1hStr = change1h >= 0 ? `+${change1h.toFixed(1)}%` : `${change1h.toFixed(1)}%`;
+                const change24hStr = change24h >= 0 ? `+${change24h.toFixed(1)}%` : `${change24h.toFixed(1)}%`;
+                
+                console.log(`   📊 30m: ${change30mStr.padStart(8)} | 1h: ${change1hStr.padStart(8)} | 24h: ${change24hStr.padStart(8)}`);
+                console.log(`   💰 Vol: ${volume24h.toLocaleString().padStart(10)} | Liq: ${liquidity.toLocaleString().padStart(10)}`);
+                
+                // ✅ NOUVEAU: Vérification critères avec 30min
+                const checks = {
+                    momentum30m: change30m >= this.whitelistMode.minMomentum30m,
+                    momentum1h: change1h >= this.whitelistMode.minMomentum1h,
+                    momentum24h: change24h >= this.whitelistMode.minMomentum24h,
+                    volume: volume24h >= this.whitelistMode.minVolume,
+                    price: price > 0,
+                    liquidity: liquidity > 10000
+                };
+                
+                const passedChecks = Object.values(checks).filter(Boolean).length;
+                const totalChecks = Object.keys(checks).length;
+                
+                console.log(`   🔍 Checks: ${passedChecks}/${totalChecks} `, Object.entries(checks).map(([key, passed]) => 
+                    `${key}:${passed ? '✅' : '❌'}`
+                ).join(' '));
+                
+                // Si tous les critères sont remplis
+                if (Object.values(checks).every(Boolean)) {
+                    console.log(`   🎯 ✅ ${symbol} QUALIFIÉ pour trading !`);
+                    
+                    // ✅ NOUVEAU: Score pondéré avec 30min
+                    const momentumScore = (
+                        (change30m * this.whitelistMode.scoringWeights.momentum30m) +
+                        (change1h * this.whitelistMode.scoringWeights.momentum1h) + 
+                        (change24h * this.whitelistMode.scoringWeights.momentum24h) +
+                        (Math.log10(volume24h / 1000) * this.whitelistMode.scoringWeights.volume)
+                    );
+                    
+                    const tokenData = {
+                        baseToken: {
+                            address: address,
+                            symbol: symbol,
+                            name: pair.baseToken?.name || symbol
+                        },
+                        priceUsd: price.toString(),
+                        volume: { h24: volume24h },
+                        liquidity: { usd: liquidity },
+                        priceChange: { 
+                            m30: change30m,  // ✅ NOUVEAU
+                            h1: change1h, 
+                            h24: change24h 
+                        },
+                        scanReason: `🛡️ Whitelist ${symbol} (30m:${change30mStr})`,
+                        isWhitelisted: true,
+                        momentumScore: momentumScore,  // ✅ Score amélioré
+                        dexData: pair,
+                        scanDetails: {
+                            change30m: change30m,  // ✅ NOUVEAU
+                            change1h: change1h,
+                            change24h: change24h,
+                            volume24h: volume24h,
+                            liquidity: liquidity,
+                            price: price,
+                            checksResult: checks,
+                            finalScore: momentumScore
+                        }
+                    };
+                    
+                    momentumTokens.push(tokenData);
+                    
+                } else {
+                    // Expliquer pourquoi rejeté
+                    const failedReasons = [];
+                    if (!checks.momentum30m) failedReasons.push(`30m(${change30mStr}<${this.whitelistMode.minMomentum30m}%)`);
+                    if (!checks.momentum1h) failedReasons.push(`1h(${change1hStr}<${this.whitelistMode.minMomentum1h}%)`);
+                    if (!checks.momentum24h) failedReasons.push(`24h(${change24hStr}<${this.whitelistMode.minMomentum24h}%)`);
+                    if (!checks.volume) failedReasons.push(`vol(${volume24h.toLocaleString()}<${this.whitelistMode.minVolume.toLocaleString()})`);
+                    
+                    console.log(`   ⚠️ ❌ ${symbol} REJETÉ: ${failedReasons.join(', ')}`);
+                }
+                
+            } catch (tokenError) {
+                console.log(`   ❌ ${symbol}: Erreur ${tokenError.message}`);
+            }
+            
+            await new Promise(resolve => setTimeout(resolve, 800));
+        }
+        
+        // ✅ NOUVEAU: Tri par score pondéré (au lieu de 1h seulement)
+        const sortedTokens = momentumTokens.sort((a, b) => {
+            return b.momentumScore - a.momentumScore;
+        });
+        
+        console.log(`🎯 RÉSULTAT: ${sortedTokens.length} tokens qualifiés (triés par score pondéré):`);
+        
+        if (sortedTokens.length > 0) {
+            sortedTokens.forEach((token, i) => {
+                const change30m = token.priceChange.m30;
+                const change1h = token.priceChange.h1;
+                const change24h = token.priceChange.h24;
+                const score = token.momentumScore;
+                
+                const change30mStr = change30m >= 0 ? `+${change30m.toFixed(1)}%` : `${change30m.toFixed(1)}%`;
+                const change1hStr = change1h >= 0 ? `+${change1h.toFixed(1)}%` : `${change1h.toFixed(1)}%`;
+                const change24hStr = change24h >= 0 ? `+${change24h.toFixed(1)}%` : `${change24h.toFixed(1)}%`;
+                
+                console.log(`   ${(i+1).toString().padStart(2)}. ${token.baseToken.symbol.padEnd(8)} | 30m: ${change30mStr.padStart(8)} | 1h: ${change1hStr.padStart(8)} | 24h: ${change24hStr.padStart(8)} | Score: ${score.toFixed(1).padStart(6)}`);
+            });
+        }
+        
+        return sortedTokens;
+        
+    } catch (error) {
+        console.error('❌ Erreur scan DexScreener:', error.message);
+        return [];
+    }
+}
 
     // ACHAT DE TOKEN AVEC POSITION SIZING VARIABLE
     async buyToken(tokenAddress, tokenData) {
