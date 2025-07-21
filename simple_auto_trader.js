@@ -68,7 +68,7 @@ class SimpleAutoTrader {
             enabled: true,
             allowOnlyWhitelisted: true,
             minMomentum30m: 1,       // ✅ ON PEUT maintenant l'utiliser !
-            minMomentum1h: 0,        
+            minMomentum1h: 1,        
             minMomentum24h: 2,       
             minVolume: 100000,       
             debugMode: true,
@@ -136,7 +136,7 @@ class SimpleAutoTrader {
             { profit: 50, percentage: 65, reason: "Gros profit (+50%)" },
             { profit: 120, percentage: 85, reason: "Moonshot (+120%)" }
         ];
-
+        
         // Protections stop-loss et trailing
         this.stopLossPercent = 10; // -10%
         this.useTrailingStop = true;
@@ -502,11 +502,19 @@ class SimpleAutoTrader {
                     const volume24h = parseFloat(pair.volume?.h24 || 0);
                     const liquidity = parseFloat(pair.liquidity?.usd || 0);
                     const price = parseFloat(pair.priceUsd || 0);
+
+
+                    // ✅ AJOUTEZ ICI
+                    console.log(`🔍 ${symbol} priceChange:`, {
+                        h1: pair.priceChange?.h1,
+                        h24: pair.priceChange?.h24,
+                        keys: Object.keys(pair.priceChange || {})
+                    });
                     
                     // 🎯 MOMENTUM CALCULÉ EN TEMPS RÉEL
                     const cachedMomentum = this.momentumCache.get(address);
                     let change30m = 0;
-                    let change1h = parseFloat(pair.priceChange?.h1 || 0); // Fallback DexScreener
+                   let change1h = parseFloat(pair.priceChange?.h1 || pair.priceChange?.h6 || 0);
                     
                     if (cachedMomentum) {
                         // Utiliser nos calculs temps réel
@@ -541,7 +549,7 @@ class SimpleAutoTrader {
                     };
                     
                     const passedChecks = Object.values(checks).filter(Boolean).length;
-                    const requiredChecks = cachedMomentum ? 6 : 5; // Moins strict si pas encore de données 30min
+                    const requiredChecks = 6; // Moins strict si pas encore de données 30min
                     
                     console.log(`   🔍 Checks: ${passedChecks}/${Object.keys(checks).length} `, Object.entries(checks).map(([key, passed]) => 
                         `${key}:${passed ? '✅' : '❌'}`
