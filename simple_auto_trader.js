@@ -45,7 +45,7 @@ class SimpleAutoTrader {
         this.wallet = Keypair.fromSecretKey(bs58.decode(process.env.PRIVATE_KEY));
         this.buyAmount = 0.01; // 0.01 SOL par achat
         this.maxSlippage = parseFloat(process.env.MAX_SLIPPAGE || '10');
-        this.maxConcurrentPositions = 5;
+        this.maxConcurrentPositions = 10;
 
         this.jupiterAPI = new JupiterAPI(
         this.wallet, 
