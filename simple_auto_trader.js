@@ -176,7 +176,10 @@ this.whitelistMode = {
         console.log(`📉 Stop loss: -${this.stopLossPercent}%`);
         console.log(`📈 Trailing stop: -${this.trailingStopPercent}%`);
 
+        this.buyingInProgress = new Set();
+         this.lastBuyAttempts = new Map(); // ← CETTE LIGNE MANQUE
          this.startPriceTracking();
+
     }
                 startPriceTracking() {
         console.log('📊 Démarrage tracking prix pour momentum 30min...');
@@ -806,9 +809,47 @@ async initializeDiscord() {
 
     // ACHAT DE TOKEN AVEC POSITION SIZING VARIABLE
     async buyToken(tokenAddress, tokenData) {
-        try {
-            const symbol = tokenData.baseToken.symbol;
+    try {
+        const symbol = tokenData.baseToken.symbol;
+        
+        // 🔒 PROTECTION ATOMIQUE AMÉLIORÉE
+        // Utiliser un timestamp pour détecter les tentatives simultanées
+        const buyAttemptKey = `${tokenAddress}_${Date.now()}`;
+        
+        // Vérification immédiate avec timeout
+        if (this.buyingInProgress.has(tokenAddress)) {
+            const lastAttempt = this.lastBuyAttempts.get(tokenAddress);
+            const timeSinceLastAttempt = Date.now() - (lastAttempt || 0);
             
+            // Si la dernière tentative date de plus de 30 secondes, c'est peut-être bloqué
+            if (timeSinceLastAttempt > 30000) {
+                console.log(`⚠️ ${symbol}: Déblocage après timeout de 30s`);
+                this.buyingInProgress.delete(tokenAddress);
+            } else {
+                console.log(`🔒 ${symbol}: Achat en cours (${timeSinceLastAttempt}ms) - SKIP`);
+                return false;
+            }
+        }
+        
+        // Double vérification position existante
+        if (this.positions.has(tokenAddress)) {
+            console.log(`🔒 ${symbol}: Position déjà ouverte - SKIP`);
+            return false;
+        }
+        
+        // Marquer le début de la tentative
+        this.buyingInProgress.add(tokenAddress);
+        this.lastBuyAttempts.set(tokenAddress, Date.now());
+        console.log(`🔒 ${symbol}: Protection activée à ${new Date().toISOString()}`);
+
+        // WRAPPER pour cleanup automatique
+        const cleanup = () => {
+            this.buyingInProgress.delete(tokenAddress);
+            this.lastBuyAttempts.delete(tokenAddress);
+            console.log(`🔓 ${symbol}: Protection libérée`);
+        };
+
+        try {
             // Vérification whitelist absolue
             if (this.whitelistMode.enabled && this.whitelistMode.allowOnlyWhitelisted) {
                 if (!this.whitelistedTokens[symbol]) {
@@ -834,26 +875,33 @@ async initializeDiscord() {
             }
             console.log(`✅ ${symbol}: ${sellTest.reason}`);
             
-            // POSITION SIZING VARIABLE (nouveau)
+            // POSITION SIZING VARIABLE
             let dynamicBuyAmount = this.buyAmount;
             
-            // Size plus petit pour memecoins
-            if (['BONK', 'WIF', 'POPCAT', 'PENGU', 'FARTCOIN', 'AGI', 'ZBCN'].includes(symbol)) {
-                dynamicBuyAmount = this.buyAmount ; // 30% moins pour memes
-                console.log(`🎭 Memecoin détecté: Taille réduite à ${dynamicBuyAmount.toFixed(3)} SOL`);
-            }
+            // Catégorisation améliorée
+            const category = this.getCategoryFromSymbol(symbol);
+            const sizingRules = {
+                'meme': 0.7,      // -30% pour memecoins
+                'defi': 1.3,      // +30% pour DeFi établi
+                'infrastructure': 1.2, // +20% pour infra
+                'ai': 1.0,        // Taille normale pour AI
+                'other': 1.0      // Taille normale par défaut
+            };
             
-            // Size plus gros pour DeFi établi  
-            if (['JUP', 'RAY', 'ORCA', 'PYTH', 'JTO', 'DRIFT'].includes(symbol)) {
-                dynamicBuyAmount = this.buyAmount ; // 30% plus pour DeFi sûr
-                console.log(`🏦 DeFi établi détecté: Taille augmentée à ${dynamicBuyAmount.toFixed(3)} SOL`);
+            dynamicBuyAmount *= sizingRules[category];
+            console.log(`📊 Catégorie ${category}: Taille ajustée à ${dynamicBuyAmount.toFixed(3)} SOL`);
+            
+            // Vérification finale avant achat - position créée entre temps ?
+            if (this.positions.has(tokenAddress)) {
+                console.log(`⚠️ ${symbol}: Position créée pendant le processus - ABORT`);
+                return false;
             }
             
             // Exécution de l'achat
             const solAmount = dynamicBuyAmount * 1e9;
             const solMint = 'So11111111111111111111111111111111111111112';
             
-            const buyQuote = await this.jupiterAPI.getJupiterQuote(solMint, tokenAddress, solAmount, false); // Avec vérification solde
+            const buyQuote = await this.jupiterAPI.getJupiterQuote(solMint, tokenAddress, solAmount, false);
             if (!buyQuote) {
                 console.log(`❌ Quote impossible pour ${symbol}`);
                 return false;
@@ -873,29 +921,27 @@ async initializeDiscord() {
                     currentAmount: tokenAmount,
                     buyTxid: txid,
                     buyTime: Date.now(),
-                    solSpent: dynamicBuyAmount, // Utiliser le montant dynamique
+                    solSpent: dynamicBuyAmount,
                     sellsExecuted: [],
                     totalSolReceived: 0,
                     partialSells: 0,
                     highestPrice: price,
                     highestPercent: 0,
                     isWhitelisted: true,
-                entryMomentum30m: tokenData.priceChange?.m30 || 0,
-                entryMomentum1h: tokenData.priceChange?.h1 || 0,
-                entryMomentum24h: tokenData.priceChange?.h24 || 0,
-                entryScore: tokenData.momentumScore || 0,
-                entryVolume: tokenData.volume?.h24 || 0,
-                entryLiquidity: tokenData.liquidity?.usd || 0,
+                    entryMomentum30m: tokenData.priceChange?.m30 || 0,
+                    entryMomentum1h: tokenData.priceChange?.h1 || 0,
+                    entryMomentum24h: tokenData.priceChange?.h24 || 0,
+                    entryScore: tokenData.momentumScore || 0,
+                    entryVolume: tokenData.volume?.h24 || 0,
+                    entryLiquidity: tokenData.liquidity?.usd || 0,
                     confidenceLevel: 'HIGH',
-                    category: this.getCategoryFromSymbol(symbol) // Pour les stats
+                    category: category
                 };
-                
 
-
-
+                // CRÉATION ATOMIQUE DE LA POSITION
                 this.positions.set(tokenAddress, position);
                 
-                // METTRE À JOUR LES STATISTIQUES
+                // Mise à jour des stats
                 this.updateStatsOnBuy(dynamicBuyAmount, symbol);
                 
                 console.log(`✅ ACHAT RÉUSSI: ${symbol}`);
@@ -904,17 +950,28 @@ async initializeDiscord() {
                 console.log(`   💎 Investissement: ${dynamicBuyAmount.toFixed(3)} SOL`);
                 console.log(`   🔗 TX: ${txid}`);
                 
+                // Une seule notification
                 await this.discordNotifications.notifyBuy(position, tokenData, this.sellLevels, this.stopLossPercent);
+                
                 return true;
             }
             
             return false;
             
-        } catch (error) {
-            console.error(`❌ Erreur achat ${tokenData.baseToken?.symbol}: ${error.message}`);
-            return false;
+        } finally {
+            // Cleanup automatique peu importe le résultat
+            cleanup();
         }
+        
+    } catch (error) {
+        console.error(`❌ Erreur achat ${tokenData.baseToken?.symbol}: ${error.message}`);
+        // Le cleanup est fait par le finally
+        return false;
     }
+}
+
+
+
 
     // HELPER: Déterminer catégorie du token
     getCategoryFromSymbol(symbol) {
@@ -942,6 +999,7 @@ updateStatsOnBuy(solSpent, symbol) {
             date: currentDate,
             trades: 0,
             wins: 0,
+
             losses: 0,
             profitSOL: 0,
             investedSOL: 0
@@ -964,6 +1022,7 @@ updateStatsOnBuy(solSpent, symbol) {
     this.stats.hourly.trades++;
     
     // All time
+
     this.stats.allTime.totalTrades++;
     this.stats.allTime.totalInvestedSOL += solSpent;
     

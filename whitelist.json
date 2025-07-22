@@ -45,14 +45,7 @@
       "verified": true,
       "rank": 4,
       "selection_reason": "Oracle de prix leader - Infrastructure critique"
-    },
-    "JTO": {
-      "address": "jtojtomepa8beP8AuQc6eXt5FriJwfFMwQx2v2f9mCL",
-      "name": "Jito",
-      "category": "infrastructure",
-      "verified": true,
-      "rank": 5,
-      "selection_reason": "Liquid staking leader - MEV et validation"
+    
     },
     "BONK": {
       "address": "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263",
@@ -199,23 +192,6 @@
     "rank": null,
     "selection_reason": "Memecoin viral sur Solana"
   },
-    "AGI": {
-    "address": "8bUbe1ujsM1G3JEbBWVVCXa2widmuPdKUB2rGKMYFw7R",
-    "name": "Delysium",
-    "category": "meme",
-    "verified": true,
-    "rank": null,
-    "selection_reason": "Un des leaders des memecoins Solana"
-  },
-    "ZBCN": {
-    "address": "ZBCNpuD7YMXzTHB2fhGkGi78MNsHGLRXUhRewNRm9RU",
-    "name": "Zebec Network",
-    "category": "meme",
-    "verified": true,
-    "rank": null,
-    "selection_reason": "Un des leaders des memecoins Solana"
-  }
-  ,
     "AI16Z": {
       "address": "HeLp6NuQkmYB4pYWo2zYs22mESHXPQYzXbB8n4V98jwC",
       "name": "ai16z",
@@ -241,3 +217,5 @@
     "volume_focus": "Tous ont volume significatif et liquidité déprouvée"
   }
 }
+
+
