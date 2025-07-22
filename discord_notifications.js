@@ -382,64 +382,162 @@ class DiscordNotifications {
     }
     // Dans discord_notifications.js
 async logTradeDetails(position, totalSolReceived, totalProfit, totalProfitPercent, reason, entryMomentumData) {
-    if (!this.isConnected) return;
+    console.log('🔍=== DEBUG logTradeDetails START ===');
+    console.log(`🔍 Arguments reçus:`);
+    console.log(`   position.symbol: ${position?.symbol}`);
+    console.log(`   totalSolReceived: ${totalSolReceived}`);
+    console.log(`   totalProfit: ${totalProfit}`);
+    console.log(`   totalProfitPercent: ${totalProfitPercent}`);
+    console.log(`   reason: ${reason}`);
+    console.log(`   entryMomentumData:`, entryMomentumData);
+    
+    if (!this.isConnected) {
+        console.log('❌ Discord non connecté - EXIT');
+        return;
+    }
+    
+    console.log(`✅ Discord connecté - Continuez...`);
     
     try {
         // Canal spécial pour les logs détaillés
         const detailChannelId = process.env.DISCORD_CHANNEL_DETAIL_ID;
-        if (!detailChannelId) return;
+        console.log(`🔍 detailChannelId depuis .env: "${detailChannelId}"`);
         
+        if (!detailChannelId) {
+            console.log('❌ DISCORD_CHANNEL_DETAIL_ID manquant dans .env - EXIT');
+            return;
+        }
+        
+        console.log(`🔍 Tentative fetch du channel...`);
         const detailChannel = await this.client.channels.fetch(detailChannelId);
-        if (!detailChannel) return;
         
+        if (!detailChannel) {
+            console.log(`❌ Channel ${detailChannelId} introuvable - EXIT`);
+            return;
+        }
+        
+        console.log(`✅ Channel trouvé: ${detailChannel.name} (type: ${detailChannel.type})`);
+        
+        // Vérifier les permissions
+        const botMember = detailChannel.guild.members.me;
+        console.log(`🔍 Bot membre trouvé: ${botMember ? 'OUI' : 'NON'}`);
+        
+        if (botMember) {
+            const permissions = detailChannel.permissionsFor(botMember);
+            console.log(`🔍 Permissions bot:`, {
+                viewChannel: permissions.has('ViewChannel'),
+                sendMessages: permissions.has('SendMessages'),
+                readMessageHistory: permissions.has('ReadMessageHistory')
+            });
+        }
+        
+        console.log(`🔍 Construction du message CSV...`);
+        
+        // Construire le message CSV
         const now = new Date();
         const openTime = new Date(position.buyTime);
         const holdMinutes = Math.round((now - openTime) / (1000 * 60));
+        
+        console.log(`🔍 Dates calculées:`);
+        console.log(`   now: ${now.toISOString()}`);
+        console.log(`   openTime: ${openTime.toISOString()}`);
+        console.log(`   holdMinutes: ${holdMinutes}`);
         
         // ROI annualisé
         const holdDays = holdMinutes / (24 * 60);
         const roiAnnualized = holdDays > 0 ? (totalProfitPercent / holdDays) * 365 : 0;
         
+        console.log(`🔍 Calculs financiers:`);
+        console.log(`   holdDays: ${holdDays}`);
+        console.log(`   roiAnnualized: ${roiAnnualized}`);
+        
+        // Prix de vente approximatif
+        let sellPriceApprox = 0;
+        try {
+            sellPriceApprox = (totalSolReceived / position.currentAmount * position.buyAmount);
+            console.log(`🔍 sellPriceApprox calculé: ${sellPriceApprox}`);
+        } catch (priceError) {
+            console.log(`⚠️ Erreur calcul prix vente: ${priceError.message}`);
+            sellPriceApprox = position.buyPrice;
+        }
+        
+        // Max drawdown
+        let maxDrawdown = 0;
+        try {
+            maxDrawdown = ((position.highestPrice - position.buyPrice) / position.buyPrice * 100 - totalProfitPercent);
+            console.log(`🔍 maxDrawdown calculé: ${maxDrawdown}`);
+        } catch (drawdownError) {
+            console.log(`⚠️ Erreur calcul drawdown: ${drawdownError.message}`);
+        }
+        
+        console.log(`🔍 Construction des champs CSV...`);
+        
         // Log line format: CSV-like pour analyse facile
-        const logLine = [
+        const logFields = [
             now.toISOString(),                    // timestamp_close
             openTime.toISOString(),               // timestamp_open  
             now.toLocaleDateString('en', {weekday: 'long'}), // day_of_week
             openTime.getHours(),                  // hour_open
             now.getHours(),                       // hour_close
             holdMinutes,                          // hold_duration_minutes
-            position.symbol,                      // symbol
-            position.buyPrice.toFixed(6),         // buy_price
-            (totalSolReceived / position.currentAmount * position.buyAmount).toFixed(6), // sell_price approx
-            position.highestPrice.toFixed(6),     // highest_price
-            position.solSpent.toFixed(4),         // sol_invested
+            position.symbol || 'UNKNOWN',         // symbol
+            (position.buyPrice || 0).toFixed(6),  // buy_price
+            sellPriceApprox.toFixed(6),          // sell_price approx
+            (position.highestPrice || 0).toFixed(6), // highest_price
+            (position.solSpent || 0).toFixed(4),  // sol_invested
             totalSolReceived.toFixed(4),          // sol_received
             totalProfit.toFixed(4),               // profit_sol
             totalProfitPercent.toFixed(2),        // profit_percent
             roiAnnualized.toFixed(1),             // roi_annualized
-            entryMomentumData?.momentum30m?.toFixed(1) || '0', // momentum_30m_entry
-            entryMomentumData?.momentum1h?.toFixed(1) || '0',  // momentum_1h_entry
-            entryMomentumData?.momentum24h?.toFixed(1) || '0', // momentum_24h_entry
-            entryMomentumData?.momentumScore?.toFixed(1) || '0', // momentum_score_entry
+            (entryMomentumData?.momentum30m || 0).toFixed(1), // momentum_30m_entry
+            (entryMomentumData?.momentum1h || 0).toFixed(1),  // momentum_1h_entry
+            (entryMomentumData?.momentum24h || 0).toFixed(1), // momentum_24h_entry
+            (entryMomentumData?.momentumScore || 0).toFixed(1), // momentum_score_entry
             entryMomentumData?.volume24h || '0',              // volume_24h_entry
             entryMomentumData?.liquidity || '0',              // liquidity_entry
-            reason,                               // exit_reason
+            reason || 'UNKNOWN',                  // exit_reason
             position.partialSells || 0,           // partial_sells_count
-            position.sellsExecuted?.join(',') || '', // sell_levels_triggered
-            ((position.highestPrice - position.buyPrice) / position.buyPrice * 100 - totalProfitPercent).toFixed(1), // max_drawdown
+            (position.sellsExecuted || []).join(',') || '', // sell_levels_triggered
+            maxDrawdown.toFixed(1),               // max_drawdown
             position.category || 'unknown',       // category
             position.confidenceLevel || 'MEDIUM', // entry_confidence
-            'unknown',                            // market_conditions (à améliorer)
-            'unknown',                            // concurrent_positions (à passer)
+            'unknown',                            // market_conditions
+            'unknown',                            // concurrent_positions
             position.isWhitelisted || false       // whitelist_verified
-        ].join(' | ');
+        ];
         
-        await detailChannel.send(`\`${logLine}\``);
+        console.log(`🔍 Nombre de champs CSV: ${logFields.length}`);
+        console.log(`🔍 Premiers champs:`, logFields.slice(0, 5));
+        
+        const logLine = logFields.join(' | ');
+        console.log(`🔍 Message CSV complet (${logLine.length} caractères):`);
+        console.log(`🔍 Preview: ${logLine.substring(0, 150)}...`);
+        
+        // Vérifier la longueur du message Discord (limit: 2000 caractères)
+        if (logLine.length > 1900) {
+            console.log(`⚠️ Message trop long (${logLine.length} chars), troncature...`);
+        }
+        
+        console.log(`🔍 Envoi du message Discord...`);
+        
+        // Envoyer le message
+        const sentMessage = await detailChannel.send(`\`${logLine}\``);
+        
+        console.log(`✅ Message CSV envoyé avec succès !`);
+        console.log(`✅ Message ID: ${sentMessage.id}`);
+        console.log(`✅ Message URL: https://discord.com/channels/${detailChannel.guild.id}/${detailChannel.id}/${sentMessage.id}`);
         
     } catch (error) {
-        console.error('❌ Erreur log trade details:', error.message);
+        console.error('❌ ERREUR dans logTradeDetails:');
+        console.error(`   Message: ${error.message}`);
+        console.error(`   Name: ${error.name}`);
+        console.error(`   Code: ${error.code}`);
+        console.error(`   Stack: ${error.stack}`);
     }
+    
+    console.log('🔍=== DEBUG logTradeDetails END ===');
 }
+
     // NOTIFICATION VENTE FINALE
     async notifyFinalSell(position, totalSolReceived, totalProfit, totalProfitPercent, reason, txid) {
         if (!this.isConnected) return;

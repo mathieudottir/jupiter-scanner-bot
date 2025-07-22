@@ -64,22 +64,29 @@ class SimpleAutoTrader {
         this.momentumCache = new Map(); // tokenAddress -> {momentum30m, momentum1h, lastUpdate}
         
         // 🎯 CONFIGURATION avec momentum 30min CALCULÉ
-        this.whitelistMode = {
-            enabled: true,
-            allowOnlyWhitelisted: true,
-            minMomentum30m: 1,       // ✅ ON PEUT maintenant l'utiliser !
-            minMomentum1h: 1,        
-            minMomentum24h: 2,       
-            minVolume: 100000,       
-            debugMode: true,
-            scoringWeights: {
-                momentum30m: 5,      // ✅ Priorité max (signal frais CALCULÉ)
-                momentum1h: 3,       
-                momentum24h: 2,      
-                volume: 1           
-            }
-        };
-
+this.whitelistMode = {
+    enabled: true,
+    allowOnlyWhitelisted: true,
+    minMomentum30m: 4,
+    minMomentum1h: 1.5,        
+    minMomentum24h: 1,       
+    minVolume: 100000,       
+    debugMode: true,
+    acceleration: {
+        enabled: true,
+        minAcceleration: 1.5,
+        requirePositiveAccel: true,
+        bonusPoints: 3,
+        minSpeedUp: 0.5
+    },
+    scoringWeights: {
+        momentum30m: 5,
+        momentum1h: 3,       
+        momentum24h: 2,      
+        volume: 1,
+        acceleration: 4  // ✅ AJOUTÉ !
+    }
+};
 
 
         // Système de cooldown PLUS SMART
@@ -232,7 +239,54 @@ class SimpleAutoTrader {
         
         console.log(`📊 Prix mis à jour pour ${this.momentumCache.size} tokens`);
     }
-
+    calculateMomentumAcceleration(change30m, change1h, change24h) {
+    const acceleration = {
+        // Accélération 30min vs 1h
+        shortTerm: change30m - change1h,  // Différence brute
+        shortTermRatio: change1h !== 0 ? change30m / change1h : 0, // Ratio
+        
+        // Accélération 1h vs 24h  
+        mediumTerm: change1h - change24h,
+        mediumTermRatio: change24h !== 0 ? change1h / change24h : 0,
+        
+        // Accélération globale (30min vs 24h)
+        overall: change30m - change24h,
+        overallRatio: change24h !== 0 ? change30m / change24h : 0,
+        
+        // 🎯 SCORE D'ACCÉLÉRATION COMPOSITE
+        score: 0,
+        isAccelerating: false,
+        accelerationType: 'none'
+    };
+    
+    // 📈 TYPES D'ACCÉLÉRATION
+    if (change30m > change1h && change1h > change24h) {
+        acceleration.accelerationType = 'PROGRESSIVE'; // Accélération constante
+        acceleration.score += 5;
+    } else if (change30m > change1h && change30m > change24h) {
+        acceleration.accelerationType = 'RECENT_SPIKE'; // Spike récent
+        acceleration.score += 3;
+    } else if (change30m > 0 && change1h > 0 && change24h > 0) {
+        acceleration.accelerationType = 'SUSTAINED'; // Momentum soutenu
+        acceleration.score += 2;
+    }
+    
+    // 🚀 CRITÈRES D'ACCÉLÉRATION
+    const accelChecks = {
+        ratioCheck: acceleration.shortTermRatio >= this.whitelistMode.acceleration.minAcceleration,
+        speedCheck: acceleration.shortTerm >= this.whitelistMode.acceleration.minSpeedUp,
+        positiveCheck: change30m > change1h,
+        strongRecent: change30m >= 2, // Au moins 2% en 30min
+    };
+    
+    acceleration.isAccelerating = Object.values(accelChecks).filter(Boolean).length >= 3;
+    
+    if (acceleration.isAccelerating) {
+        acceleration.score += this.whitelistMode.acceleration.bonusPoints;
+    }
+    
+    return acceleration;
+}
     // 💾 AJOUTER PRIX À L'HISTORIQUE
     addPriceToHistory(tokenAddress, price, timestamp) {
         if (!this.priceHistory.has(tokenAddress)) {
@@ -465,185 +519,281 @@ class SimpleAutoTrader {
     
 
     // INITIALISATION DISCORD
-    async initializeDiscord() {
-    return await this.discordNotifications.initialize();
-}
-    async scanNewTokens() {
-        console.log('🔍 Scan whitelist avec momentum 30min CALCULÉ...');
+async initializeDiscord() {
+    const connected = await this.discordNotifications.initialize();
+    
+    if (connected) {
+        console.log('✅ Discord connecté - Test du système de logs...');
         
-        try {
-            const momentumTokens = [];
-            const whitelistEntries = Object.entries(this.whitelistedTokens);
-            
-            console.log(`📊 Critères: 30m(≥${this.whitelistMode.minMomentum30m}%) 1h(≥${this.whitelistMode.minMomentum1h}%) 24h(≥${this.whitelistMode.minMomentum24h}%)`);
-            
-            for (const [symbol, address] of whitelistEntries) {
-                try {
-                    console.log(`🔎 ${symbol.padEnd(8)} | Vérification...`);
-                    
-                    // 📊 OBTENIR DONNÉES DEXSCREENER (24h + volume)
-                    const response = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${address}`);
-                    
-                    if (!response.ok) {
-                        console.log(`   ❌ DexScreener error ${response.status}`);
-                        continue;
-                    }
-                    
-                    const data = await response.json();
-                    const pair = data.pairs?.find(p => p.chainId === 'solana');
-                    
-                    if (!pair) {
-                        console.log(`   ❌ Pas de paire Solana trouvée`);
-                        continue;
-                    }
-                    
-                    // 📊 DONNÉES DEXSCREENER
-                    const change24h = parseFloat(pair.priceChange?.h24 || 0);
-                    const volume24h = parseFloat(pair.volume?.h24 || 0);
-                    const liquidity = parseFloat(pair.liquidity?.usd || 0);
-                    const price = parseFloat(pair.priceUsd || 0);
-
-
-                    // ✅ AJOUTEZ ICI
-                    console.log(`🔍 ${symbol} priceChange:`, {
-                        h1: pair.priceChange?.h1,
-                        h24: pair.priceChange?.h24,
-                        keys: Object.keys(pair.priceChange || {})
-                    });
-                    
-                    // 🎯 MOMENTUM CALCULÉ EN TEMPS RÉEL
-                    const cachedMomentum = this.momentumCache.get(address);
-                    let change30m = 0;
-                   let change1h = parseFloat(pair.priceChange?.h1 || pair.priceChange?.h6 || 0);
-                    
-                    if (cachedMomentum) {
-                        // Utiliser nos calculs temps réel
-                        change30m = cachedMomentum.momentum30m;
-                        change1h = cachedMomentum.momentum1h; // Plus précis que DexScreener
-                        
-                        const ageMinutes = (Date.now() - cachedMomentum.lastUpdate) / (1000 * 60);
-                        console.log(`   🔄 Momentum calculé (${ageMinutes.toFixed(0)}min ago)`);
-                    } else {
-                        console.log(`   ⏳ Pas encore de données 30min (en cours de collecte)`);
-                        // Utiliser seulement DexScreener pour l'instant
-                        change30m = 0; // Sera disponible après quelques scans
-                    }
-                    
-                    // 📊 AFFICHAGE
-                    const change30mStr = change30m >= 0 ? `+${change30m.toFixed(1)}%` : `${change30m.toFixed(1)}%`;
-                    const change1hStr = change1h >= 0 ? `+${change1h.toFixed(1)}%` : `${change1h.toFixed(1)}%`;
-                    const change24hStr = change24h >= 0 ? `+${change24h.toFixed(1)}%` : `${change24h.toFixed(1)}%`;
-                    
-                    console.log(`   📊 30m: ${change30mStr.padStart(8)} | 1h: ${change1hStr.padStart(8)} | 24h: ${change24hStr.padStart(8)}`);
-                    console.log(`   💰 Vol: ${volume24h.toLocaleString().padStart(12)} | Liq: ${liquidity.toLocaleString().padStart(12)}`);
-                    
-                    // ✅ CRITÈRES AVEC 30MIN CALCULÉ
-                    const checks = {
-                        momentum30m: change30m >= this.whitelistMode.minMomentum30m,
-                        momentum1h: change1h >= this.whitelistMode.minMomentum1h,
-                        momentum24h: change24h >= this.whitelistMode.minMomentum24h,
-                        volume: volume24h >= this.whitelistMode.minVolume,
-                        price: price > 0,
-                        liquidity: liquidity > 10000,
-                        hasHistoryData: !!cachedMomentum // Bonus si on a des données
-                    };
-                    
-                    const passedChecks = Object.values(checks).filter(Boolean).length;
-                    const requiredChecks = 6; // Moins strict si pas encore de données 30min
-                    
-                    console.log(`   🔍 Checks: ${passedChecks}/${Object.keys(checks).length} `, Object.entries(checks).map(([key, passed]) => 
-                        `${key}:${passed ? '✅' : '❌'}`
-                    ).join(' '));
-                    
-                    if (passedChecks >= requiredChecks) {
-                        console.log(`   🎯 ✅ ${symbol} QUALIFIÉ pour trading !`);
-                        
-                        // Score avec momentum 30min calculé
-                        const momentumScore = (
-                            (change30m * this.whitelistMode.scoringWeights.momentum30m) +
-                            (change1h * this.whitelistMode.scoringWeights.momentum1h) + 
-                            (change24h * this.whitelistMode.scoringWeights.momentum24h) +
-                            (Math.log10(Math.max(volume24h, 1000) / 1000) * this.whitelistMode.scoringWeights.volume) +
-                            (checks.hasHistoryData ? 2 : 0) // Bonus données temps réel
-                        );
-                        
-                        const tokenData = {
-                            baseToken: { address, symbol, name: pair.baseToken?.name || symbol },
-                            priceUsd: price.toString(),
-                            volume: { h24: volume24h },
-                            liquidity: { usd: liquidity },
-                            priceChange: { 
-                                m30: change30m,  // ✅ CALCULÉ EN TEMPS RÉEL
-                                h1: change1h, 
-                                h24: change24h 
-                            },
-                            scanReason: `🛡️ Whitelist ${symbol} (30m:${change30mStr} CALCULÉ)`,
-                            isWhitelisted: true,
-                            momentumScore: momentumScore,
-                            dexData: pair,
-                            // Métadonnées temps réel
-                            realTimeMomentum: cachedMomentum,
-                            scanDetails: {
-                                change30m: change30m,
-                                change1h: change1h,
-                                change24h: change24h,
-                                volume24h: volume24h,
-                                liquidity: liquidity,
-                                price: price,
-                                checksResult: checks,
-                                finalScore: momentumScore,
-                                dataSource: cachedMomentum ? 'REAL_TIME' : 'DEXSCREENER_ONLY'
-                            }
-                        };
-                        
-                        momentumTokens.push(tokenData);
-                    } else {
-                        const failedReasons = [];
-                        if (!checks.momentum30m) failedReasons.push(`30m(${change30mStr}<${this.whitelistMode.minMomentum30m}%)`);
-                        if (!checks.momentum1h) failedReasons.push(`1h(${change1hStr}<${this.whitelistMode.minMomentum1h}%)`);
-                        if (!checks.momentum24h) failedReasons.push(`24h(${change24hStr}<${this.whitelistMode.minMomentum24h}%)`);
-                        if (!checks.volume) failedReasons.push(`vol(${volume24h.toLocaleString()}<${this.whitelistMode.minVolume.toLocaleString()})`);
-                        
-                        console.log(`   ⚠️ ❌ ${symbol} REJETÉ: ${failedReasons.join(', ')}`);
-                    }
-                    
-                } catch (tokenError) {
-                    console.log(`   ❌ ${symbol}: Erreur ${tokenError.message}`);
+        // 🧪 TEST AUTOMATIQUE APRÈS 3 SECONDES
+        setTimeout(async () => {
+            try {
+                console.log('\n🧪 === TEST CANAL DETAIL ===');
+                console.log(`🔍 DISCORD_CHANNEL_DETAIL_ID: ${process.env.DISCORD_CHANNEL_DETAIL_ID}`);
+                
+                if (!process.env.DISCORD_CHANNEL_DETAIL_ID) {
+                    console.log('❌ DISCORD_CHANNEL_DETAIL_ID manquant dans .env');
+                    return;
                 }
                 
-                await new Promise(resolve => setTimeout(resolve, 800));
+                // Test accès au channel detail
+                const detailChannel = await this.discordNotifications.client.channels.fetch(process.env.DISCORD_CHANNEL_DETAIL_ID);
+                
+                if (detailChannel) {
+                    console.log(`✅ Channel detail trouvé: ${detailChannel.name} (ID: ${detailChannel.id})`);
+                    
+                    // Test envoi message simple
+                    const testMsg = await detailChannel.send('🧪 TEST - Bot connecté au canal de logs détaillés');
+                    console.log(`✅ Message test envoyé avec succès (ID: ${testMsg.id})`);
+                    
+                    // 🧪 TEST LOG TRADE FORCÉ
+                    console.log('\n🧪 Test de logTradeDetails() avec données fictives...');
+                    
+                    const fakePosition = {
+                        symbol: 'TEST',
+                        buyTime: Date.now() - (30 * 60 * 1000), // 30min ago
+                        buyPrice: 0.5000,
+                        highestPrice: 0.5500,
+                        solSpent: 0.01,
+                        currentAmount: 1000,
+                        buyAmount: 1000,
+                        partialSells: 0,
+                        sellsExecuted: [],
+                        category: 'test',
+                        confidenceLevel: 'HIGH',
+                        isWhitelisted: true
+                    };
+                    
+                    const fakeEntryData = {
+                        momentum30m: 5.2,
+                        momentum1h: 3.1,
+                        momentum24h: 1.8,
+                        momentumScore: 25.5,
+                        volume24h: 150000,
+                        liquidity: 50000
+                    };
+                    
+                    console.log('🧪 Appel logTradeDetails...');
+                    
+                    await this.discordNotifications.logTradeDetails(
+                        fakePosition,
+                        0.011,           // totalSolReceived
+                        0.001,           // totalProfit  
+                        10.0,            // totalProfitPercent
+                        'TEST FORCÉ AU DÉMARRAGE - Bot opérationnel',
+                        fakeEntryData
+                    );
+                    
+                    console.log('✅ Test logTradeDetails terminé avec succès !');
+                    console.log('💡 Si vous voyez un message CSV dans le canal, le système fonctionne parfaitement.');
+                    
+                } else {
+                    console.log(`❌ Channel detail introuvable avec l'ID: ${process.env.DISCORD_CHANNEL_DETAIL_ID}`);
+                    console.log('💡 Vérifiez que l\'ID est correct et que le bot a accès au channel');
+                }
+                
+            } catch (error) {
+                console.error('❌ Erreur lors du test:', error.message);
+                console.error(`🔍 Type d'erreur: ${error.name}`);
+                if (error.code) {
+                    console.error(`🔍 Code Discord: ${error.code}`);
+                }
+                console.error(`🔍 Stack:`, error.stack);
             }
-            
-            // Tri par score
-            const sortedTokens = momentumTokens.sort((a, b) => b.momentumScore - a.momentumScore);
-            
-            console.log(`🎯 RÉSULTAT: ${sortedTokens.length} tokens qualifiés (momentum 30min CALCULÉ):`);
-            
-            if (sortedTokens.length > 0) {
-                sortedTokens.forEach((token, i) => {
-                    const change30m = token.priceChange.m30;
-                    const change1h = token.priceChange.h1;
-                    const change24h = token.priceChange.h24;
-                    const score = token.momentumScore;
-                    const dataSource = token.scanDetails.dataSource === 'REAL_TIME' ? '🔴' : '⚪';
-                    
-                    const change30mStr = change30m >= 0 ? `+${change30m.toFixed(1)}%` : `${change30m.toFixed(1)}%`;
-                    const change1hStr = change1h >= 0 ? `+${change1h.toFixed(1)}%` : `${change1h.toFixed(1)}%`;
-                    const change24hStr = change24h >= 0 ? `+${change24h.toFixed(1)}%` : `${change24h.toFixed(1)}%`;
-                    
-                    console.log(`   ${(i+1).toString().padStart(2)}. ${token.baseToken.symbol.padEnd(8)} | 30m: ${change30mStr.padStart(8)} | 1h: ${change1hStr.padStart(8)} | 24h: ${change24hStr.padStart(8)} | Score: ${score.toFixed(1).padStart(6)} ${dataSource}`);
+        }, 3000);
+    } else {
+        console.log('❌ Impossible de se connecter à Discord');
+    }
+    
+    return connected;
+}
+  async scanNewTokens() {
+    console.log('🔍 Scan whitelist avec momentum 30min CALCULÉ...');
+    
+    try {
+        const momentumTokens = [];
+        const whitelistEntries = Object.entries(this.whitelistedTokens);
+        
+        console.log(`📊 Critères: 30m(≥${this.whitelistMode.minMomentum30m}%) 1h(≥${this.whitelistMode.minMomentum1h}%) 24h(≥${this.whitelistMode.minMomentum24h}%)`);
+        
+        for (const [symbol, address] of whitelistEntries) {
+            try {
+                console.log(`🔎 ${symbol.padEnd(8)} | Vérification...`);
+                
+                // 📊 OBTENIR DONNÉES DEXSCREENER (24h + volume)
+                const response = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${address}`);
+                
+                if (!response.ok) {
+                    console.log(`   ❌ DexScreener error ${response.status}`);
+                    continue;
+                }
+                
+                const data = await response.json();
+                const pair = data.pairs?.find(p => p.chainId === 'solana');
+                
+                if (!pair) {
+                    console.log(`   ❌ Pas de paire Solana trouvée`);
+                    continue;
+                }
+                
+                // 📊 DONNÉES DEXSCREENER
+                const change24h = parseFloat(pair.priceChange?.h24 || 0);
+                const volume24h = parseFloat(pair.volume?.h24 || 0);
+                const liquidity = parseFloat(pair.liquidity?.usd || 0);
+                const price = parseFloat(pair.priceUsd || 0);
+
+                console.log(`🔍 ${symbol} priceChange:`, {
+                    h1: pair.priceChange?.h1,
+                    h24: pair.priceChange?.h24,
+                    keys: Object.keys(pair.priceChange || {})
                 });
                 
-                console.log(`\n💡 Légende: 🔴 = Momentum 30min calculé en temps réel | ⚪ = Données DexScreener seulement`);
+                // 🎯 MOMENTUM CALCULÉ EN TEMPS RÉEL
+                const cachedMomentum = this.momentumCache.get(address);
+                let change30m = 0;
+                let change1h = parseFloat(pair.priceChange?.h1 || pair.priceChange?.h6 || 0);
+                
+                if (cachedMomentum) {
+                    // Utiliser nos calculs temps réel
+                    change30m = cachedMomentum.momentum30m;
+                    change1h = cachedMomentum.momentum1h; // Plus précis que DexScreener
+                    
+                    const ageMinutes = (Date.now() - cachedMomentum.lastUpdate) / (1000 * 60);
+                    console.log(`   🔄 Momentum calculé (${ageMinutes.toFixed(0)}min ago)`);
+                } else {
+                    console.log(`   ⏳ Pas encore de données 30min (en cours de collecte)`);
+                    // Utiliser seulement DexScreener pour l'instant
+                    change30m = 0; // Sera disponible après quelques scans
+                }
+                
+                // ✅ MAINTENANT calculer l'accélération (APRÈS avoir les variables)
+                const acceleration = this.calculateMomentumAcceleration(change30m, change1h, change24h);
+                
+                // 📊 AFFICHAGE AVEC ACCÉLÉRATION
+                const change30mStr = change30m >= 0 ? `+${change30m.toFixed(1)}%` : `${change30m.toFixed(1)}%`;
+                const change1hStr = change1h >= 0 ? `+${change1h.toFixed(1)}%` : `${change1h.toFixed(1)}%`;
+                const change24hStr = change24h >= 0 ? `+${change24h.toFixed(1)}%` : `${change24h.toFixed(1)}%`;
+                
+                const accelStr = acceleration.isAccelerating ? 
+                    `🚀${acceleration.accelerationType}(+${acceleration.shortTerm.toFixed(1)}%)` : 
+                    `⚪${acceleration.accelerationType}(${acceleration.shortTerm.toFixed(1)}%)`;
+                
+                console.log(`   📊 30m: ${change30mStr.padStart(8)} | 1h: ${change1hStr.padStart(8)} | 24h: ${change24hStr.padStart(8)}`);
+                console.log(`   💰 Vol: ${volume24h.toLocaleString().padStart(12)} | Liq: ${liquidity.toLocaleString().padStart(12)}`);
+                console.log(`   🚀 Accel: ${accelStr.padEnd(25)} | Score: ${acceleration.score.toFixed(1)}`);
+
+                // ✅ CRITÈRES AVEC ACCÉLÉRATION
+                const checks = {
+                    momentum30m: change30m >= this.whitelistMode.minMomentum30m,
+                    momentum1h: change1h >= this.whitelistMode.minMomentum1h,
+                    momentum24h: change24h >= this.whitelistMode.minMomentum24h,
+                    volume: volume24h >= this.whitelistMode.minVolume,
+                    price: price > 0,
+                    liquidity: liquidity > 10000,
+                    acceleration: acceleration.isAccelerating || !this.whitelistMode.acceleration.enabled,
+                    hasHistoryData: !!cachedMomentum
+                };
+                
+                const passedChecks = Object.values(checks).filter(Boolean).length;
+                const requiredChecks = Math.max(7, Object.keys(checks).length - 1);
+                
+                console.log(`   🔍 Checks: ${passedChecks}/${Object.keys(checks).length} `, Object.entries(checks).map(([key, passed]) => 
+                    `${key}:${passed ? '✅' : '❌'}`
+                ).join(' '));
+                
+                if (passedChecks >= requiredChecks) {
+                    console.log(`   🎯 ✅ ${symbol} QUALIFIÉ pour trading !`);
+                    
+                    // Score avec accélération
+                    const momentumScore = (
+                        (change30m * this.whitelistMode.scoringWeights.momentum30m) +
+                        (change1h * this.whitelistMode.scoringWeights.momentum1h) + 
+                        (change24h * this.whitelistMode.scoringWeights.momentum24h) +
+                        (Math.log10(Math.max(volume24h, 1000) / 1000) * this.whitelistMode.scoringWeights.volume) +
+                        (acceleration.score * (this.whitelistMode.scoringWeights.acceleration || 4)) + // ✅ Poids accélération
+                        (checks.hasHistoryData ? 2 : 0)
+                    );
+                    
+                    const tokenData = {
+                        baseToken: { address, symbol, name: pair.baseToken?.name || symbol },
+                        priceUsd: price.toString(),
+                        volume: { h24: volume24h },
+                        liquidity: { usd: liquidity },
+                        priceChange: { 
+                            m30: change30m,
+                            h1: change1h, 
+                            h24: change24h 
+                        },
+                        scanReason: `🛡️ Whitelist ${symbol} (30m:${change30mStr} CALCULÉ)`,
+                        isWhitelisted: true,
+                        momentumScore: momentumScore,
+                        dexData: pair,
+                        acceleration: acceleration, // ✅ Stocker l'accélération
+                        realTimeMomentum: cachedMomentum,
+                        scanDetails: {
+                            change30m: change30m,
+                            change1h: change1h,
+                            change24h: change24h,
+                            volume24h: volume24h,
+                            liquidity: liquidity,
+                            price: price,
+                            checksResult: checks,
+                            finalScore: momentumScore,
+                            acceleration: acceleration,
+                            dataSource: cachedMomentum ? 'REAL_TIME' : 'DEXSCREENER_ONLY'
+                        }
+                    };
+                    
+                    momentumTokens.push(tokenData);
+                } else {
+                    const failedReasons = [];
+                    if (!checks.momentum30m) failedReasons.push(`30m(${change30mStr}<${this.whitelistMode.minMomentum30m}%)`);
+                    if (!checks.momentum1h) failedReasons.push(`1h(${change1hStr}<${this.whitelistMode.minMomentum1h}%)`);
+                    if (!checks.momentum24h) failedReasons.push(`24h(${change24hStr}<${this.whitelistMode.minMomentum24h}%)`);
+                    if (!checks.volume) failedReasons.push(`vol(${volume24h.toLocaleString()}<${this.whitelistMode.minVolume.toLocaleString()})`);
+                    if (!checks.acceleration) failedReasons.push(`accel(${acceleration.accelerationType})`);
+                    
+                    console.log(`   ⚠️ ❌ ${symbol} REJETÉ: ${failedReasons.join(', ')}`);
+                }
+                
+            } catch (tokenError) {
+                console.log(`   ❌ ${symbol}: Erreur ${tokenError.message}`);
             }
             
-            return sortedTokens;
-            
-        } catch (error) {
-            console.error('❌ Erreur scan:', error.message);
-            return [];
+            await new Promise(resolve => setTimeout(resolve, 800));
         }
+        
+        // Tri par score
+        const sortedTokens = momentumTokens.sort((a, b) => b.momentumScore - a.momentumScore);
+        
+        console.log(`🎯 RÉSULTAT: ${sortedTokens.length} tokens qualifiés (momentum + accélération):`);
+        
+        if (sortedTokens.length > 0) {
+            sortedTokens.forEach((token, i) => {
+                const change30m = token.priceChange.m30;
+                const change1h = token.priceChange.h1;
+                const change24h = token.priceChange.h24;
+                const score = token.momentumScore;
+                const accelType = token.acceleration?.accelerationType || 'NONE';
+                const dataSource = token.scanDetails.dataSource === 'REAL_TIME' ? '🔴' : '⚪';
+                
+                const change30mStr = change30m >= 0 ? `+${change30m.toFixed(1)}%` : `${change30m.toFixed(1)}%`;
+                const change1hStr = change1h >= 0 ? `+${change1h.toFixed(1)}%` : `${change1h.toFixed(1)}%`;
+                const change24hStr = change24h >= 0 ? `+${change24h.toFixed(1)}%` : `${change24h.toFixed(1)}%`;
+                
+                console.log(`   ${(i+1).toString().padStart(2)}. ${token.baseToken.symbol.padEnd(8)} | 30m: ${change30mStr.padStart(8)} | 1h: ${change1hStr.padStart(8)} | 24h: ${change24hStr.padStart(8)} | ${accelType.padEnd(12)} | Score: ${score.toFixed(1).padStart(6)} ${dataSource}`);
+            });
+            
+            console.log(`\n💡 Légende: 🔴 = Temps réel | ⚪ = DexScreener | PROGRESSIVE/RECENT_SPIKE/SUSTAINED = Types d'accélération`);
+        }
+        
+        return sortedTokens;
+        
+    } catch (error) {
+        console.error('❌ Erreur scan:', error.message);
+        return [];
     }
+}
 
     // 🛑 ARRÊT PROPRE
     stopPriceTracking() {
@@ -1187,7 +1337,7 @@ console.log(`   💎 ${position.symbol}: ${changePercent > 0 ? '+' : ''}${change
     }
 
     // VENTE TOTALE
-    // Dans sellEntirePosition() - CORRIGEZ comme ça :
+
 async sellEntirePosition(position, currentPrice, reason) {
     try {
         const tokenMint = position.tokenAddress;
