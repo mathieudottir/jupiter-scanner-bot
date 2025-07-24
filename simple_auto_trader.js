@@ -352,7 +352,7 @@ this.whitelistMode = {
     }
 
     // 🔍 TROUVER PRIX LE PLUS PROCHE D'UN TIMESTAMP
-    findClosestPrice(history, targetTimestamp) {
+findClosestPrice(history, targetTimestamp) {
     if (!history || history.length === 0) return null;
     
     let closest = null;
@@ -369,14 +369,24 @@ this.whitelistMode = {
     if (!closest) return null;
     
     const diffMinutes = minDiff / (1000 * 60);
+    const targetAge = (Date.now() - targetTimestamp) / (1000 * 60);
     
-    // 🔧 TOLÉRANCE ÉLARGIE : 20 minutes au lieu de 10
-    if (diffMinutes <= 20) {
-        console.log(`📊 Prix trouvé: ${diffMinutes.toFixed(1)}min d'écart`);
+    // 🎯 TOLÉRANCE ADAPTATIVE selon l'âge du target
+    let tolerance;
+    if (targetAge <= 35) {
+        tolerance = 30;  // Pour 30min: accepter jusqu'à 30min d'écart
+    } else if (targetAge <= 70) {
+        tolerance = 40;  // Pour 1h: accepter jusqu'à 40min d'écart
+    } else {
+        tolerance = 50;  // Pour plus ancien: 50min d'écart
+    }
+    
+    if (diffMinutes <= tolerance) {
+        console.log(`✅ Prix trouvé: ${diffMinutes.toFixed(1)}min d'écart (max ${tolerance}min)`);
         return closest;
     }
     
-    console.log(`❌ Écart trop grand: ${diffMinutes.toFixed(1)}min > 20min`);
+    console.log(`❌ Écart: ${diffMinutes.toFixed(1)}min > ${tolerance}min (target ${targetAge.toFixed(0)}min ago)`);
     return null;
 }
     // CHARGEMENT DE LA WHITELIST - FORMAT CORRECT POUR VOTRE FICHIER
