@@ -646,10 +646,15 @@ async initializeDiscord() {
                 // 📊 OBTENIR DONNÉES DEXSCREENER (24h + volume)
                 const response = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${address}`);
                 
-                if (!response.ok) {
-                    console.log(`   ❌ DexScreener error ${response.status}`);
+                            if (!response.ok) {
+                if (response.status === 429) {
+                    console.log(`   🚦 Rate limit ${symbol}, pause 10s...`);
+                    await new Promise(resolve => setTimeout(resolve, 10000)); // 10 secondes
                     continue;
                 }
+                console.log(`   ❌ DexScreener error ${response.status}`);
+                continue;
+}
                 
                 const data = await response.json();
                 const pair = data.pairs?.find(p => p.chainId === 'solana');
@@ -783,7 +788,7 @@ async initializeDiscord() {
                 console.log(`   ❌ ${symbol}: Erreur ${tokenError.message}`);
             }
             
-            await new Promise(resolve => setTimeout(resolve, 800));
+            await new Promise(resolve => setTimeout(resolve, 2000));
         }
         
         // Tri par score
