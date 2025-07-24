@@ -382,7 +382,7 @@ findClosestPrice(history, targetTimestamp) {
     }
     
     if (diffMinutes <= tolerance) {
-        console.log(`✅ Prix trouvé: ${diffMinutes.toFixed(1)}min d'écart (max ${tolerance}min)`);
+        //console.log(`✅ Prix trouvé: ${diffMinutes.toFixed(1)}min d'écart (max ${tolerance}min)`);
         return closest;
     }
     
