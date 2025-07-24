@@ -138,10 +138,12 @@ this.whitelistMode = {
         // Configuration ventes échelonnées
         // VENTES PLUS AGRESSIVES
         this.sellLevels = [
-            { profit: 10, percentage: 35, reason: "Sécurisation rapide (+12%)" },
-            { profit: 20, percentage: 45, reason: "Profit solide (+20%)" },
-            { profit: 50, percentage: 65, reason: "Gros profit (+50%)" },
-            { profit: 120, percentage: 85, reason: "Moonshot (+120%)" }
+            // 🚀 SÉCURISATION ULTRA-RAPIDE
+            { profit: 3, percentage: 40, reason: "Sécurisation immédiate (+3%)" },
+            { profit: 6, percentage: 50, reason: "Profit confirmé (+6%)" },
+            { profit: 12, percentage: 60, reason: "Bon profit (+12%)" },
+            { profit: 25, percentage: 75, reason: "Très bon profit (+25%)" },
+            { profit: 50, percentage: 90, reason: "Excellent profit (+50%)" }
         ];
         
         // Protections stop-loss et trailing
@@ -191,7 +193,7 @@ this.whitelistMode = {
             } catch (error) {
                 console.log('⚠️ Erreur update prix:', error.message);
             }
-        }, 5 * 60 * 1000); // 5 minutes
+        }, 2 * 60 * 1000); // 2 minutes
     }
 
          async updateAllPrices() {
@@ -351,24 +353,32 @@ this.whitelistMode = {
 
     // 🔍 TROUVER PRIX LE PLUS PROCHE D'UN TIMESTAMP
     findClosestPrice(history, targetTimestamp) {
-        let closest = null;
-        let minDiff = Infinity;
-        
-        for (const entry of history) {
-            const diff = Math.abs(entry.timestamp - targetTimestamp);
-            if (diff < minDiff) {
-                minDiff = diff;
-                closest = entry;
-            }
+    if (!history || history.length === 0) return null;
+    
+    let closest = null;
+    let minDiff = Infinity;
+    
+    for (const entry of history) {
+        const diff = Math.abs(entry.timestamp - targetTimestamp);
+        if (diff < minDiff) {
+            minDiff = diff;
+            closest = entry;
         }
-        
-        // Accepter seulement si moins de 10 minutes d'écart
-        if (closest && minDiff < (10 * 60 * 1000)) {
-            return closest;
-        }
-        
-        return null;
     }
+    
+    if (!closest) return null;
+    
+    const diffMinutes = minDiff / (1000 * 60);
+    
+    // 🔧 TOLÉRANCE ÉLARGIE : 20 minutes au lieu de 10
+    if (diffMinutes <= 20) {
+        console.log(`📊 Prix trouvé: ${diffMinutes.toFixed(1)}min d'écart`);
+        return closest;
+    }
+    
+    console.log(`❌ Écart trop grand: ${diffMinutes.toFixed(1)}min > 20min`);
+    return null;
+}
     // CHARGEMENT DE LA WHITELIST - FORMAT CORRECT POUR VOTRE FICHIER
     loadWhitelist() {
         try {
