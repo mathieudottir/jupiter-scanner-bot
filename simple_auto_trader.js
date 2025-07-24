@@ -386,7 +386,7 @@ findClosestPrice(history, targetTimestamp) {
         return closest;
     }
     
-    console.log(`❌ Écart: ${diffMinutes.toFixed(1)}min > ${tolerance}min (target ${targetAge.toFixed(0)}min ago)`);
+   // console.log(`❌ Écart: ${diffMinutes.toFixed(1)}min > ${tolerance}min (target ${targetAge.toFixed(0)}min ago)`);
     return null;
 }
     // CHARGEMENT DE LA WHITELIST - FORMAT CORRECT POUR VOTRE FICHIER
