@@ -837,16 +837,13 @@ async initializeDiscord() {
     try {
         const symbol = tokenData.baseToken.symbol;
         
-        // 🔒 PROTECTION ATOMIQUE AMÉLIORÉE
-        // Utiliser un timestamp pour détecter les tentatives simultanées
+        // Protection atomique (garde votre code existant)
         const buyAttemptKey = `${tokenAddress}_${Date.now()}`;
         
-        // Vérification immédiate avec timeout
         if (this.buyingInProgress.has(tokenAddress)) {
             const lastAttempt = this.lastBuyAttempts.get(tokenAddress);
             const timeSinceLastAttempt = Date.now() - (lastAttempt || 0);
             
-            // Si la dernière tentative date de plus de 30 secondes, c'est peut-être bloqué
             if (timeSinceLastAttempt > 30000) {
                 console.log(`⚠️ ${symbol}: Déblocage après timeout de 30s`);
                 this.buyingInProgress.delete(tokenAddress);
@@ -856,18 +853,15 @@ async initializeDiscord() {
             }
         }
         
-        // Double vérification position existante
         if (this.positions.has(tokenAddress)) {
             console.log(`🔒 ${symbol}: Position déjà ouverte - SKIP`);
             return false;
         }
         
-        // Marquer le début de la tentative
         this.buyingInProgress.add(tokenAddress);
         this.lastBuyAttempts.set(tokenAddress, Date.now());
         console.log(`🔒 ${symbol}: Protection activée à ${new Date().toISOString()}`);
 
-        // WRAPPER pour cleanup automatique
         const cleanup = () => {
             this.buyingInProgress.delete(tokenAddress);
             this.lastBuyAttempts.delete(tokenAddress);
@@ -875,7 +869,7 @@ async initializeDiscord() {
         };
 
         try {
-            // Vérification whitelist absolue
+            // Vérifications existantes
             if (this.whitelistMode.enabled && this.whitelistMode.allowOnlyWhitelisted) {
                 if (!this.whitelistedTokens[symbol]) {
                     console.log(`🚨 SKIP ${symbol}: Non whitelisté`);
@@ -891,7 +885,6 @@ async initializeDiscord() {
                 }
             }
             
-            // Test de vendabilité SIMPLE
             const sellTest = await this.jupiterAPI.testTokenSellability(tokenAddress);
             if (!sellTest.canSell) {
                 console.log(`🚨 SKIP ${symbol}: ${sellTest.reason}`);
@@ -900,25 +893,32 @@ async initializeDiscord() {
             }
             console.log(`✅ ${symbol}: ${sellTest.reason}`);
             
-            // POSITION SIZING VARIABLE
+            // Position sizing (garde votre code)
             let dynamicBuyAmount = this.buyAmount;
-            
-            // Catégorisation améliorée
             const category = this.getCategoryFromSymbol(symbol);
             const sizingRules = {
-                'meme': 0.7,      // -30% pour memecoins
-                'defi': 1.3,      // +30% pour DeFi établi
-                'infrastructure': 1.2, // +20% pour infra
-                'ai': 1.0,        // Taille normale pour AI
-                'other': 1.0      // Taille normale par défaut
+                'meme': 0.7,
+                'defi': 1.3,
+                'infrastructure': 1.2,
+                'ai': 1.0,
+                'other': 1.0
             };
             
             dynamicBuyAmount *= sizingRules[category];
             console.log(`📊 Catégorie ${category}: Taille ajustée à ${dynamicBuyAmount.toFixed(3)} SOL`);
             
-            // Vérification finale avant achat - position créée entre temps ?
             if (this.positions.has(tokenAddress)) {
                 console.log(`⚠️ ${symbol}: Position créée pendant le processus - ABORT`);
+                return false;
+            }
+            
+            // ✅ NOUVEAU: Vérifier balance SOL AVANT achat
+            const solBalanceBefore = await this.connection.getBalance(this.wallet.publicKey);
+            const solBeforeAmount = solBalanceBefore / 1e9;
+            console.log(`💰 ${symbol}: Balance SOL avant achat: ${solBeforeAmount.toFixed(4)} SOL`);
+            
+            if (solBeforeAmount < dynamicBuyAmount * 1.1) { // +10% marge pour frais
+                console.log(`❌ ${symbol}: Balance SOL insuffisante (${solBeforeAmount.toFixed(4)} < ${(dynamicBuyAmount * 1.1).toFixed(4)})`);
                 return false;
             }
             
@@ -932,69 +932,157 @@ async initializeDiscord() {
                 return false;
             }
             
+            console.log(`🔄 ${symbol}: Exécution swap...`);
             const txid = await this.jupiterAPI.executeSwap(buyQuote);
             
-            if (txid) {
-                const tokenAmount = parseFloat(buyQuote.outAmount);
-                const price = parseFloat(tokenData.priceUsd || 0);
-                
-                const position = {
-                    tokenAddress,
-                    symbol: symbol,
-                    buyPrice: price,
-                    buyAmount: tokenAmount,
-                    currentAmount: tokenAmount,
-                    buyTxid: txid,
-                    buyTime: Date.now(),
-                    solSpent: dynamicBuyAmount,
-                    sellsExecuted: [],
-                    totalSolReceived: 0,
-                    partialSells: 0,
-                    highestPrice: price,
-                    highestPercent: 0,
-                    isWhitelisted: true,
-                    entryMomentum30m: tokenData.priceChange?.m30 || 0,
-                    entryMomentum1h: tokenData.priceChange?.h1 || 0,
-                    entryMomentum24h: tokenData.priceChange?.h24 || 0,
-                    entryScore: tokenData.momentumScore || 0,
-                    entryVolume: tokenData.volume?.h24 || 0,
-                    entryLiquidity: tokenData.liquidity?.usd || 0,
-                    confidenceLevel: 'HIGH',
-                    category: category
-                };
-
-                // CRÉATION ATOMIQUE DE LA POSITION
-                this.positions.set(tokenAddress, position);
-                
-                // Mise à jour des stats
-                this.updateStatsOnBuy(dynamicBuyAmount, symbol);
-                
-                console.log(`✅ ACHAT RÉUSSI: ${symbol}`);
-                console.log(`   💰 Prix: ${price.toFixed(6)}`);
-                console.log(`   🪙 Quantité: ${tokenAmount.toLocaleString()}`);
-                console.log(`   💎 Investissement: ${dynamicBuyAmount.toFixed(3)} SOL`);
-                console.log(`   🔗 TX: ${txid}`);
-                
-                // Une seule notification
-                await this.discordNotifications.notifyBuy(position, tokenData, this.sellLevels, this.stopLossPercent);
-                
-                return true;
+            if (!txid) {
+                console.log(`❌ ${symbol}: Swap échoué - pas de TXID`);
+                return false;
             }
             
-            return false;
+            console.log(`📡 ${symbol}: TX soumise: ${txid}`);
+            
+            // ✅ NOUVEAU: VÉRIFICATION CRITIQUE DE LA TRANSACTION
+            console.log(`⏳ ${symbol}: Vérification transaction...`);
+            
+            // Attendre 3 secondes puis vérifier
+            await new Promise(resolve => setTimeout(resolve, 3000));
+            
+            let txExists = false;
+            let attempts = 0;
+            const maxAttempts = 10;
+            
+            while (!txExists && attempts < maxAttempts) {
+                try {
+                    const txResult = await this.connection.getTransaction(txid, {
+                        commitment: 'confirmed',
+                        maxSupportedTransactionVersion: 0
+                    });
+                    
+                    if (txResult && txResult.meta) {
+                        if (txResult.meta.err) {
+                            console.log(`❌ ${symbol}: TX échouée sur la blockchain: ${JSON.stringify(txResult.meta.err)}`);
+                            return false;
+                        } else {
+                            console.log(`✅ ${symbol}: TX confirmée sur la blockchain`);
+                            txExists = true;
+                            break;
+                        }
+                    } else {
+                        console.log(`⏳ ${symbol}: TX pas encore confirmée (tentative ${attempts + 1}/${maxAttempts})`);
+                        attempts++;
+                        await new Promise(resolve => setTimeout(resolve, 2000));
+                    }
+                } catch (txError) {
+                    console.log(`⚠️ ${symbol}: Erreur vérification TX: ${txError.message}`);
+                    attempts++;
+                    await new Promise(resolve => setTimeout(resolve, 2000));
+                }
+            }
+            
+            if (!txExists) {
+                console.log(`❌ ${symbol}: TX introuvable après ${maxAttempts} tentatives - ABANDON`);
+                console.log(`🔍 ${symbol}: Vérifiez manuellement: https://solscan.io/tx/${txid}`);
+                return false;
+            }
+            
+            // ✅ NOUVEAU: Vérifier balance token APRÈS achat
+            console.log(`🔍 ${symbol}: Vérification tokens reçus...`);
+            
+            let tokenBalance = 0;
+            let balanceAttempts = 0;
+            const maxBalanceAttempts = 5;
+            
+            while (tokenBalance === 0 && balanceAttempts < maxBalanceAttempts) {
+                try {
+                    const tokenAccounts = await this.connection.getParsedTokenAccountsByOwner(
+                        this.wallet.publicKey,
+                        { mint: new PublicKey(tokenAddress) }
+                    );
+                    
+                    if (tokenAccounts.value.length > 0) {
+                        tokenBalance = parseFloat(tokenAccounts.value[0].account.data.parsed.info.tokenAmount.amount);
+                        console.log(`✅ ${symbol}: ${tokenBalance.toLocaleString()} tokens reçus`);
+                    } else {
+                        console.log(`⏳ ${symbol}: Tokens pas encore visibles (tentative ${balanceAttempts + 1}/${maxBalanceAttempts})`);
+                        balanceAttempts++;
+                        await new Promise(resolve => setTimeout(resolve, 2000));
+                    }
+                } catch (balanceError) {
+                    console.log(`⚠️ ${symbol}: Erreur vérification balance: ${balanceError.message}`);
+                    balanceAttempts++;
+                    await new Promise(resolve => setTimeout(resolve, 2000));
+                }
+            }
+            
+            if (tokenBalance === 0) {
+                console.log(`❌ ${symbol}: Aucun token reçu malgré TX confirmée - Position abandonnée`);
+                console.log(`🔍 ${symbol}: TX: https://solscan.io/tx/${txid}`);
+                return false;
+            }
+            
+            // ✅ NOUVEAU: Vérifier balance SOL APRÈS achat
+            const solBalanceAfter = await this.connection.getBalance(this.wallet.publicKey);
+            const solAfterAmount = solBalanceAfter / 1e9;
+            const actualSpent = solBeforeAmount - solAfterAmount;
+            
+            console.log(`💰 ${symbol}: Balance SOL après achat: ${solAfterAmount.toFixed(4)} SOL`);
+            console.log(`💸 ${symbol}: SOL réellement dépensé: ${actualSpent.toFixed(4)} SOL`);
+            
+            // CRÉATION DE LA POSITION VÉRIFIÉE
+            const price = parseFloat(tokenData.priceUsd || 0);
+            
+            const position = {
+                tokenAddress,
+                symbol: symbol,
+                buyPrice: price,
+                buyAmount: tokenBalance,                    // ✅ Balance réelle
+                currentAmount: tokenBalance,               // ✅ Balance réelle
+                buyTxid: txid,
+                buyTime: Date.now(),
+                solSpent: actualSpent,                     // ✅ Coût réel
+                sellsExecuted: [],
+                totalSolReceived: 0,
+                partialSells: 0,
+                highestPrice: price,
+                highestPercent: 0,
+                isWhitelisted: true,
+                entryMomentum30m: tokenData.priceChange?.m30 || 0,
+                entryMomentum1h: tokenData.priceChange?.h1 || 0,
+                entryMomentum24h: tokenData.priceChange?.h24 || 0,
+                entryScore: tokenData.momentumScore || 0,
+                entryVolume: tokenData.volume?.h24 || 0,
+                entryLiquidity: tokenData.liquidity?.usd || 0,
+                confidenceLevel: 'HIGH',
+                category: category,
+                verified: true                             // ✅ Marqueur de vérification
+            };
+
+            this.positions.set(tokenAddress, position);
+            
+            // Stats avec coût réel
+            this.updateStatsOnBuy(actualSpent, symbol);
+            
+            console.log(`✅ ACHAT VÉRIFIÉ: ${symbol}`);
+            console.log(`   💰 Prix: ${price.toFixed(6)}`);
+            console.log(`   🪙 Quantité: ${tokenBalance.toLocaleString()}`);
+            console.log(`   💎 Coût réel: ${actualSpent.toFixed(4)} SOL`);
+            console.log(`   🔗 TX: ${txid}`);
+            console.log(`   ✅ Position vérifiée et créée`);
+            
+            await this.discordNotifications.notifyBuy(position, tokenData, this.sellLevels, this.stopLossPercent);
+            
+            return true;
             
         } finally {
-            // Cleanup automatique peu importe le résultat
             cleanup();
         }
         
     } catch (error) {
         console.error(`❌ Erreur achat ${tokenData.baseToken?.symbol}: ${error.message}`);
-        // Le cleanup est fait par le finally
         return false;
     }
 }
-
 
 
 
@@ -1433,8 +1521,77 @@ async sellEntirePosition(position, currentPrice, reason) {
             { mint: new PublicKey(tokenMint) }
         );
         
+        // ✅ NOUVEAU: Détection position fantôme
         if (tokenAccounts.value.length === 0) {
-            this.markTokenAsProcessed(position.tokenAddress, 'loss');
+            console.log(`👻 ${position.symbol}: POSITION FANTÔME DÉTECTÉE`);
+            console.log(`   🔍 TX d'achat: https://solscan.io/tx/${position.buyTxid}`);
+            console.log(`   💰 SOL théoriquement dépensé: ${position.solSpent.toFixed(4)} SOL`);
+            console.log(`   📊 Ventes partielles: ${position.totalSolReceived || 0} SOL`);
+            
+            // Vérifier si la TX d'achat existe vraiment
+            let txExists = false;
+            try {
+                const txResult = await this.connection.getTransaction(position.buyTxid, {
+                    commitment: 'confirmed',
+                    maxSupportedTransactionVersion: 0
+                });
+                txExists = !!txResult;
+            } catch (e) {
+                txExists = false;
+            }
+            
+            if (!txExists) {
+                console.log(`💀 ${position.symbol}: TX d'achat inexistante - Position entièrement fantôme`);
+                
+                // Position 100% fantôme = aucune perte réelle
+                const tradeResult = 'phantom';
+                
+                // ✅ PAS de mise à jour stats pour positions fantômes
+                console.log(`🧹 ${position.symbol}: Nettoyage position fantôme (pas de stats)`);
+                
+                this.markTokenAsProcessed(position.tokenAddress, 'phantom');
+                
+                await this.discordNotifications.notifyPhantomPosition(position, reason);
+                
+                this.positions.delete(position.tokenAddress);
+                return true; // Nettoyage réussi
+            }
+            
+            // TX existe mais plus de tokens = probable vente externe ou erreur
+            console.log(`⚠️ ${position.symbol}: TX existe mais tokens introuvables`);
+            
+            const totalSolReceived = position.totalSolReceived || 0;
+            const totalProfit = totalSolReceived - position.solSpent;
+            const totalProfitPercent = totalSolReceived > 0 ? 
+                ((totalSolReceived / position.solSpent) - 1) * 100 : -100;
+            
+            const tradeResult = totalProfitPercent > 0 ? 'profit' : 'loss';
+            
+            console.log(`   💰 Récupération avec ventes partielles: ${totalSolReceived.toFixed(4)} SOL`);
+            console.log(`   📊 Performance estimée: ${totalProfitPercent.toFixed(1)}%`);
+            
+            this.updateStatsOnSell(totalSolReceived, position.solSpent, totalProfitPercent, position.buyTime, position.symbol, tradeResult);
+            this.markTokenAsProcessed(position.tokenAddress, tradeResult);
+            
+            const entryMomentumData = {
+                momentum30m: position.entryMomentum30m || 0,
+                momentum1h: position.entryMomentum1h || 0, 
+                momentum24h: position.entryMomentum24h || 0,
+                momentumScore: position.entryScore || 0,
+                volume24h: position.entryVolume || 0,
+                liquidity: position.entryLiquidity || 0
+            };
+
+            await this.discordNotifications.logTradeDetails(
+                position, totalSolReceived, totalProfit, totalProfitPercent, 
+                `${reason} (tokens introuvables)`, entryMomentumData, null
+            );
+            
+            await this.discordNotifications.notifyFinalSell(
+                position, totalSolReceived, totalProfit, totalProfitPercent, 
+                `${reason} (tokens introuvables)`, 'NO_TX'
+            );
+            
             this.positions.delete(position.tokenAddress);
             return false;
         }
@@ -1443,8 +1600,18 @@ async sellEntirePosition(position, currentPrice, reason) {
         const amountToSell = Math.floor(realBalance * 0.99);
         
         if (amountToSell <= 0) {
-            const tradeResult = position.totalSolReceived > 0 ? 'profit' : 'breakeven';
+            console.log(`⚠️ ${position.symbol}: Balance insuffisante (${realBalance})`);
+            
+            const totalSolReceived = position.totalSolReceived || 0;
+            const totalProfit = totalSolReceived - position.solSpent;
+            const totalProfitPercent = totalSolReceived > 0 ? 
+                ((totalSolReceived / position.solSpent) - 1) * 100 : -100;
+            
+            const tradeResult = totalProfitPercent > 0 ? 'profit' : 'loss';
+            
+            this.updateStatsOnSell(totalSolReceived, position.solSpent, totalProfitPercent, position.buyTime, position.symbol, tradeResult);
             this.markTokenAsProcessed(position.tokenAddress, tradeResult);
+            
             this.positions.delete(position.tokenAddress);
             return false;
         }
@@ -1455,36 +1622,36 @@ async sellEntirePosition(position, currentPrice, reason) {
         const txid = await this.jupiterAPI.executeSwap(sellQuote);
         
         if (txid) {
-            // ✅ CALCULER LES VARIABLES D'ABORD
             const solReceived = parseFloat(sellQuote.outAmount) / 1e9;
-            const totalSolReceived = position.totalSolReceived + solReceived;
+            const previousPartialSol = position.totalSolReceived || 0;
+            const totalSolReceived = previousPartialSol + solReceived;
             const totalProfit = totalSolReceived - position.solSpent;
             const totalProfitPercent = ((totalSolReceived / position.solSpent) - 1) * 100;
             
-            // Déterminer le résultat pour le système de cooldown
-            let tradeResult;
-            if (totalProfitPercent > 0) {
-                tradeResult = 'profit';
-            } else {
-                tradeResult = 'loss'; // Breakeven compté comme perte
-            }
+            console.log(`\n💰 ${position.symbol} - VENTE RÉUSSIE:`);
+            console.log(`   🏦 SOL investi: ${position.solSpent.toFixed(4)} SOL`);
+            console.log(`   📊 SOL ventes partielles: ${previousPartialSol.toFixed(4)} SOL`);
+            console.log(`   📊 SOL vente finale: ${solReceived.toFixed(4)} SOL`);
+            console.log(`   📊 SOL TOTAL reçu: ${totalSolReceived.toFixed(4)} SOL`);
+            console.log(`   💎 Profit: ${totalProfit > 0 ? '+' : ''}${totalProfit.toFixed(4)} SOL`);
+            console.log(`   📈 Performance: ${totalProfitPercent > 0 ? '+' : ''}${totalProfitPercent.toFixed(2)}%`);
             
-            // METTRE À JOUR LES STATISTIQUES
+            const tradeResult = totalProfitPercent > 0 ? 'profit' : 'loss';
+            console.log(`   🏷️ Résultat: ${tradeResult.toUpperCase()}`);
+            
             this.updateStatsOnSell(totalSolReceived, position.solSpent, totalProfitPercent, position.buyTime, position.symbol, tradeResult);
-            
             this.markTokenAsProcessed(position.tokenAddress, tradeResult);
             
-            // Stocker infos pour l'historique
             if (this.tradedTokens.has(position.tokenAddress)) {
                 const history = this.tradedTokens.get(position.tokenAddress);
                 history.finalProfit = totalProfitPercent;
                 history.holdTimeMinutes = parseInt(((Date.now() - position.buyTime) / (1000 * 60)));
-                history.partialSells = position.partialSells;
+                history.partialSells = position.partialSells || 0;
                 history.exitReason = reason;
                 history.totalSolReceived = totalSolReceived;
+                history.totalProfit = totalProfit;
             }
             
-            // ✅ MAINTENANT préparer les données d'entrée
             const entryMomentumData = {
                 momentum30m: position.entryMomentum30m || 0,
                 momentum1h: position.entryMomentum1h || 0, 
@@ -1494,21 +1661,13 @@ async sellEntirePosition(position, currentPrice, reason) {
                 liquidity: position.entryLiquidity || 0
             };
 
-            // ✅ Log détaillé APRÈS avoir toutes les variables
             await this.discordNotifications.logTradeDetails(
-                position, 
-                totalSolReceived, 
-                totalProfit, 
-                totalProfitPercent, 
-                reason,
-                entryMomentumData
+                position, totalSolReceived, totalProfit, totalProfitPercent, reason, entryMomentumData, txid
             );
             
             await this.discordNotifications.notifyFinalSell(position, totalSolReceived, totalProfit, totalProfitPercent, reason, txid);
             
             this.positions.delete(position.tokenAddress);
-            
-            // Invalider le cache SOL
             this.jupiterAPI.invalidateBalanceCache('So11111111111111111111111111111111111111112');
             
             return true;
@@ -1517,10 +1676,90 @@ async sellEntirePosition(position, currentPrice, reason) {
         return false;
         
     } catch (error) {
-        console.error(`❌ Erreur vente totale: ${error.message}`);
-        this.markTokenAsProcessed(position.tokenAddress, 'loss');
+        console.error(`❌ Erreur vente totale ${position.symbol}: ${error.message}`);
+        
+        const totalSolReceived = position.totalSolReceived || 0;
+        const totalProfit = totalSolReceived - position.solSpent;
+        const totalProfitPercent = totalSolReceived > 0 ? 
+            ((totalSolReceived / position.solSpent) - 1) * 100 : -100;
+        
+        const tradeResult = totalProfitPercent > 0 ? 'profit' : 'loss';
+        
+        console.log(`   💰 Récupération avec ventes partielles: ${totalSolReceived.toFixed(4)} SOL`);
+        console.log(`   📊 Performance estimée: ${totalProfitPercent.toFixed(1)}%`);
+        
+        this.updateStatsOnSell(totalSolReceived, position.solSpent, totalProfitPercent, position.buyTime, position.symbol, tradeResult);
+        this.markTokenAsProcessed(position.tokenAddress, tradeResult);
+        
         return false;
     }
+}
+
+    async cleanupPhantomPositions() {
+    console.log('\n👻 === NETTOYAGE POSITIONS FANTÔMES ===');
+    
+    if (this.positions.size === 0) {
+        console.log('✅ Aucune position à vérifier');
+        return { cleaned: 0, verified: 0 };
+    }
+    
+    let cleanedCount = 0;
+    let verifiedCount = 0;
+    
+    for (const [tokenAddress, position] of this.positions.entries()) {
+        try {
+            console.log(`🔍 Vérification ${position.symbol}...`);
+            
+            // Vérifier existence des tokens
+            const tokenAccounts = await this.connection.getParsedTokenAccountsByOwner(
+                this.wallet.publicKey,
+                { mint: new PublicKey(tokenAddress) }
+            );
+            
+            let hasTokens = tokenAccounts.value.length > 0 && 
+                           parseFloat(tokenAccounts.value[0].account.data.parsed.info.tokenAmount.amount) > 0;
+            
+            if (!hasTokens) {
+                console.log(`👻 ${position.symbol}: Pas de tokens dans le wallet`);
+                
+                // Vérifier TX d'achat
+                let txExists = false;
+                try {
+                    const txResult = await this.connection.getTransaction(position.buyTxid, {
+                        commitment: 'confirmed',
+                        maxSupportedTransactionVersion: 0
+                    });
+                    txExists = !!txResult;
+                } catch (e) {
+                    txExists = false;
+                }
+                
+                if (!txExists) {
+                    console.log(`💀 ${position.symbol}: Position entièrement fantôme - SUPPRESSION`);
+                    this.positions.delete(tokenAddress);
+                    cleanedCount++;
+                } else {
+                    console.log(`⚠️ ${position.symbol}: TX existe mais tokens vendus ailleurs`);
+                    // Garder pour traitement manuel
+                }
+            } else {
+                console.log(`✅ ${position.symbol}: Position vérifiée`);
+                verifiedCount++;
+            }
+            
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            
+        } catch (error) {
+            console.error(`❌ Erreur vérification ${position.symbol}: ${error.message}`);
+        }
+    }
+    
+    console.log(`\n📊 RÉSULTAT NETTOYAGE:`);
+    console.log(`   👻 Positions fantômes supprimées: ${cleanedCount}`);
+    console.log(`   ✅ Positions vérifiées: ${verifiedCount}`);
+    console.log(`   📍 Positions restantes: ${this.positions.size}`);
+    
+    return { cleaned: cleanedCount, verified: verifiedCount };
 }
 
     // TRAITEMENT DES NOUVEAUX TOKENS
@@ -1604,7 +1843,8 @@ async sellEntirePosition(position, currentPrice, reason) {
         console.log(`⏰ Check positions: Toutes les 2 minutes`);
         console.log(`📊 Scan whitelist: Toutes les 10 minutes`);
         console.log('💡 Appuyez sur Ctrl+C pour arrêter\n');
-        
+
+        await this.cleanupPhantomPositions();
         let scanCount = 0;
         
         // Timer récap performance (toutes les 10 minutes)
